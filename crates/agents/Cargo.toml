@@ -1,0 +1,9 @@
+[package]
+name = "bunny-agents"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+[dependencies]
+bunny-core = { path = "../core" }
+pyo3 = { version = "0.28.2", features = ["auto-initialize"] }
+tokio = { version = "1.43", features = ["full"] }
