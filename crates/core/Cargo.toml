@@ -1,0 +1,24 @@
+[package]
+name = "bunny-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+build = "build.rs"
+[dependencies]
+anyhow = "1.0.95"
+thiserror = "2.0.11"
+tracing = "0.1.41"
+tokio = { version = "1.43.0", features = ["full"] }
+serde = { version = "1.0.217", features = ["derive"] }
+jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
+libsql = "0.9.29"
+lancedb = "0.26.2"
+bytes = "1.9"
+tonic = "0.14.5"
+prost = "0.14.3"
+uuid = { version = "1.16", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+[build-dependencies]
+tonic-build = "0.14.5"
