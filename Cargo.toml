@@ -2,7 +2,7 @@
 members = ["crates/core", "crates/agents", "crates/network", "crates/sandbox"]
 resolver = "2"
 [workspace.package]
-version = "0.6.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Aether <aether@bunny.defend>"]
