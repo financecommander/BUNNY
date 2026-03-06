@@ -217,6 +217,1067 @@ financecommander/
 
 ---
 
+## Shapeshifter Architecture Goals
+
+### Adaptive AI Execution, Compression, and Validation System
+
+This section outlines the **future build-out plan** for the Shapeshifter architecture across the existing repository ecosystem.
+
+Shapeshifter introduces:
+
+- adaptive model routing
+- compression-aware execution
+- layered validation
+- distributed worker execution
+- telemetry-driven optimization
+
+The goal is to evolve the current centralized swarm architecture into a **task-adaptive AI infrastructure platform**.
+
+#### System Overview
+
+Shapeshifter enables the system to dynamically adjust:
+
+- model size
+- compression level
+- workflow topology
+- compute location
+- validation intensity
+
+based on task classification and operational telemetry.
+
+Execution pipeline:
+
+```
+
+task input
+↓
+task classification
+↓
+compression profile selection
+↓
+workflow template selection
+↓
+execution
+↓
+validation
+↓
+escalation (if required)
+
+```
+
+#### Repository Architecture
+
+Shapeshifter builds on the current repository structure.
+
+| Repository | Role |
+|---|---|
+| `super-duper-spork` | control plane orchestration |
+| `Orchestra` | workflow DSL |
+| `Triton` | model compilation and compression |
+| `AI-PORTAL` | evaluation and experiment management |
+| `ProbFlow` | probabilistic routing and uncertainty |
+| `BUNNY` | edge worker runtime |
+
+#### Core Architectural Layers
+
+##### Control Plane
+
+Repository: `super-duper-spork`
+
+Responsibilities:
+
+- task intake and routing
+- workflow orchestration
+- escalation control
+- validation ladder management
+- telemetry aggregation
+
+Future additions:
+
+```
+
+/routing
+/task_classifier
+/validation_ladder
+/compression_router
+/worker_registry
+
+```
+
+##### Workflow Definition
+
+Repository: `Orchestra`
+
+Responsibilities:
+
+- workflow templates
+- swarm execution topology
+- recursive task decomposition
+- validation pipeline definitions
+
+Future additions:
+
+```
+
+/workflow_templates
+/shapes
+fast_path
+reviewer_path
+swarm_path
+hierarchical_path
+
+```
+
+##### Model Runtime and Compression
+
+Repository: `Triton`
+
+Responsibilities:
+
+- model compilation
+- compression pipelines
+- ternary runtime kernels
+- mixed precision export
+- hardware-target optimization
+
+Future additions:
+
+```
+
+/compression_profiles
+planner_safe
+specialist_balanced
+worker_fast
+edge_extreme
+
+/layer_sensitivity
+/runtime_metrics
+/export_targets
+
+```
+
+##### Model Lifecycle and Evaluation
+
+Repository: `AI-PORTAL`
+
+Responsibilities:
+
+- model registry
+- experiment tracking
+- compression benchmarking
+- dataset management
+- telemetry dashboards
+
+Future additions:
+
+```
+
+/models
+/experiments
+/compression_benchmarks
+/task_family_metrics
+
+```
+
+##### Routing Intelligence
+
+Repository: `ProbFlow`
+
+Responsibilities:
+
+- uncertainty scoring
+- routing optimization
+- compression profile selection
+- escalation thresholds
+
+Future additions:
+
+```
+
+/routing_models
+/confidence_scoring
+/expected_value_estimation
+
+```
+
+##### Edge Worker Runtime
+
+Repository: `BUNNY`
+
+Responsibilities:
+
+- lightweight worker runtime
+- constrained-device execution
+- secure remote worker protocol
+- compressed model execution
+
+Future additions:
+
+```
+
+/worker_runtime
+/task_executor
+/telemetry_client
+
+```
+
+#### Compression Strategy
+
+Compression must be treated as a **routing primitive** rather than a static model property.
+
+The system uses compression profiles.
+
+##### Profiles
+
+###### Planner Safe
+
+Purpose:
+
+- architecture planning
+- complex reasoning
+- arbitration
+
+Compression:
+
+- minimal quantization
+- mixed precision
+
+###### Specialist Balanced
+
+Purpose:
+
+- domain reasoning
+- medium complexity tasks
+
+Compression:
+
+- 4–5 bit quantization
+- mixed precision
+
+###### Worker Fast
+
+Purpose:
+
+- bounded execution tasks
+- high-throughput workers
+
+Compression:
+
+- aggressive quantization
+- optional ternary
+
+###### Edge Extreme
+
+Purpose:
+
+- edge nodes
+- constrained environments
+
+Compression:
+
+- ternary models
+- ultra-low memory footprint
+
+#### Ternary Compression Policy
+
+Ternary compression is applied selectively.
+
+Use cases:
+
+- swarm workers
+- microtasks
+- edge nodes
+
+Avoid ternary for:
+
+- planners
+- reviewer models
+- complex reasoning tasks
+
+Layer sensitivity rules:
+
+| Layer | Compression Policy |
+|---|---|
+| Embeddings | preserve |
+| Attention projections | moderate compression |
+| Feed-forward layers | aggressive compression |
+| Output head | preserve |
+
+#### Task Classification
+
+Tasks are categorized before execution.
+
+| Class | Example Tasks |
+|---|---|
+| Compress | formatting, tests, lint fixes |
+| Balance | bug fixes, repo review |
+| Preserve | architecture changes |
+
+Classification inputs:
+
+- scope
+- risk
+- context size
+- expected reasoning depth
+
+#### Validation Architecture
+
+Validation uses a multi-stage ladder.
+
+##### Level 1 — Deterministic Checks
+
+Examples:
+
+- syntax validation
+- lint checks
+- type checking
+- schema validation
+
+##### Level 2 — Semantic Checks
+
+Examples:
+
+- unit tests
+- static analysis
+- policy rules
+
+##### Level 3 — Reviewer Models
+
+Examples:
+
+- code reviewer
+- security reviewer
+- compliance reviewer
+
+##### Level 4 — Human Review
+
+Required for:
+
+- high-risk outputs
+- unresolved conflicts
+- regulatory workflows
+
+#### Worker Self-Validation
+
+Workers return validation metadata.
+
+Example:
+
+```json
+{
+  "task_id": "123",
+  "confidence": 0.84,
+  "checks": {
+    "lint_pass": true,
+    "tests_passed": true
+  }
+}
+```
+
+This allows early rejection of low-quality outputs.
+
+#### Telemetry System
+
+Telemetry is required for adaptive routing.
+
+Metrics tracked:
+
+* success rate
+* validation pass rate
+* latency
+* compression profile performance
+* escalation frequency
+
+Repositories responsible:
+
+```
+Triton → runtime metrics
+AI-PORTAL → dashboards
+super-duper-spork → routing telemetry
+```
+
+#### Failure Escalation
+
+Escalation ladder:
+
+```
+Compress → Balance → Preserve
+```
+
+Triggers:
+
+* validation failure
+* low confidence
+* repeated retries
+
+#### Execution Examples
+
+##### Small Task
+
+```
+classification → compress
+model → worker_fast
+validation → deterministic checks
+```
+
+##### Medium Task
+
+```
+classification → balance
+workflow → planner + workers
+validation → semantic checks + reviewer
+```
+
+##### Large Task
+
+```
+classification → preserve
+workflow → hierarchical swarm
+validation → reviewer chain + human approval
+```
+
+#### Implementation Roadmap
+
+##### Phase 1 — Validation Infrastructure
+
+Repositories:
+
+```
+super-duper-spork
+Orchestra
+```
+
+Deliverables:
+
+* validation ladder
+* worker self-check protocol
+* task classification system
+
+##### Phase 2 — Compression Profiles
+
+Repositories:
+
+```
+Triton
+AI-PORTAL
+```
+
+Deliverables:
+
+* compression profiles
+* benchmark dashboards
+* mixed precision policies
+
+##### Phase 3 — Adaptive Routing
+
+Repositories:
+
+```
+super-duper-spork
+ProbFlow
+```
+
+Deliverables:
+
+* compression-aware routing
+* confidence scoring
+* escalation policies
+
+##### Phase 4 — Distributed Worker Expansion
+
+Repositories:
+
+```
+BUNNY
+super-duper-spork
+```
+
+Deliverables:
+
+* worker registry
+* remote task execution
+* edge worker support
+
+##### Phase 5 — Telemetry Optimization
+
+Repositories:
+
+```
+AI-PORTAL
+Triton
+ProbFlow
+```
+
+Deliverables:
+
+* compression telemetry
+* routing optimization
+* performance analytics
+
+#### Engineering Principles
+
+Shapeshifter follows a single rule:
+
+> Use the smallest reliable model and workflow capable of completing the task safely.
+
+Compression, routing, and validation all support this objective.
+
+#### Expected Outcomes
+
+Compared to traditional single-model systems:
+
+* improved compute efficiency
+* reduced validation burden
+* higher scalability
+* adaptive model deployment
+* improved failure containment
+
+#### Long-Term Vision
+
+Shapeshifter evolves the existing architecture into:
+
+```
+Adaptive AI Infrastructure Platform
+```
+
+Where:
+
+* routing decisions are telemetry-driven
+* models are dynamically selected
+* workflows adapt to task complexity
+* validation is automated by default
+
+
+## Shapeshifter Architecture Goals
+
+### Adaptive AI Execution, Compression, and Validation System
+
+This section outlines the **future build-out plan** for the Shapeshifter architecture across the existing repository ecosystem.
+
+Shapeshifter introduces:
+
+- adaptive model routing
+- compression-aware execution
+- layered validation
+- distributed worker execution
+- telemetry-driven optimization
+
+The goal is to evolve the current centralized swarm architecture into a **task-adaptive AI infrastructure platform**.
+
+#### System Overview
+
+Shapeshifter enables the system to dynamically adjust:
+
+- model size
+- compression level
+- workflow topology
+- compute location
+- validation intensity
+
+based on task classification and operational telemetry.
+
+Execution pipeline:
+
+```
+
+task input
+↓
+task classification
+↓
+compression profile selection
+↓
+workflow template selection
+↓
+execution
+↓
+validation
+↓
+escalation (if required)
+
+```
+
+#### Repository Architecture
+
+Shapeshifter builds on the current repository structure.
+
+| Repository | Role |
+|---|---|
+| `super-duper-spork` | control plane orchestration |
+| `Orchestra` | workflow DSL |
+| `Triton` | model compilation and compression |
+| `AI-PORTAL` | evaluation and experiment management |
+| `ProbFlow` | probabilistic routing and uncertainty |
+| `BUNNY` | edge worker runtime |
+
+#### Core Architectural Layers
+
+##### Control Plane
+
+Repository: `super-duper-spork`
+
+Responsibilities:
+
+- task intake and routing
+- workflow orchestration
+- escalation control
+- validation ladder management
+- telemetry aggregation
+
+Future additions:
+
+```
+
+/routing
+/task_classifier
+/validation_ladder
+/compression_router
+/worker_registry
+
+```
+
+##### Workflow Definition
+
+Repository: `Orchestra`
+
+Responsibilities:
+
+- workflow templates
+- swarm execution topology
+- recursive task decomposition
+- validation pipeline definitions
+
+Future additions:
+
+```
+
+/workflow_templates
+/shapes
+fast_path
+reviewer_path
+swarm_path
+hierarchical_path
+
+```
+
+##### Model Runtime and Compression
+
+Repository: `Triton`
+
+Responsibilities:
+
+- model compilation
+- compression pipelines
+- ternary runtime kernels
+- mixed precision export
+- hardware-target optimization
+
+Future additions:
+
+```
+
+/compression_profiles
+planner_safe
+specialist_balanced
+worker_fast
+edge_extreme
+
+/layer_sensitivity
+/runtime_metrics
+/export_targets
+
+```
+
+##### Model Lifecycle and Evaluation
+
+Repository: `AI-PORTAL`
+
+Responsibilities:
+
+- model registry
+- experiment tracking
+- compression benchmarking
+- dataset management
+- telemetry dashboards
+
+Future additions:
+
+```
+
+/models
+/experiments
+/compression_benchmarks
+/task_family_metrics
+
+```
+
+##### Routing Intelligence
+
+Repository: `ProbFlow`
+
+Responsibilities:
+
+- uncertainty scoring
+- routing optimization
+- compression profile selection
+- escalation thresholds
+
+Future additions:
+
+```
+
+/routing_models
+/confidence_scoring
+/expected_value_estimation
+
+```
+
+##### Edge Worker Runtime
+
+Repository: `BUNNY`
+
+Responsibilities:
+
+- lightweight worker runtime
+- constrained-device execution
+- secure remote worker protocol
+- compressed model execution
+
+Future additions:
+
+```
+
+/worker_runtime
+/task_executor
+/telemetry_client
+
+```
+
+#### Compression Strategy
+
+Compression must be treated as a **routing primitive** rather than a static model property.
+
+The system uses compression profiles.
+
+##### Profiles
+
+###### Planner Safe
+
+Purpose:
+
+- architecture planning
+- complex reasoning
+- arbitration
+
+Compression:
+
+- minimal quantization
+- mixed precision
+
+###### Specialist Balanced
+
+Purpose:
+
+- domain reasoning
+- medium complexity tasks
+
+Compression:
+
+- 4–5 bit quantization
+- mixed precision
+
+###### Worker Fast
+
+Purpose:
+
+- bounded execution tasks
+- high-throughput workers
+
+Compression:
+
+- aggressive quantization
+- optional ternary
+
+###### Edge Extreme
+
+Purpose:
+
+- edge nodes
+- constrained environments
+
+Compression:
+
+- ternary models
+- ultra-low memory footprint
+
+#### Ternary Compression Policy
+
+Ternary compression is applied selectively.
+
+Use cases:
+
+- swarm workers
+- microtasks
+- edge nodes
+
+Avoid ternary for:
+
+- planners
+- reviewer models
+- complex reasoning tasks
+
+Layer sensitivity rules:
+
+| Layer | Compression Policy |
+|---|---|
+| Embeddings | preserve |
+| Attention projections | moderate compression |
+| Feed-forward layers | aggressive compression |
+| Output head | preserve |
+
+#### Task Classification
+
+Tasks are categorized before execution.
+
+| Class | Example Tasks |
+|---|---|
+| Compress | formatting, tests, lint fixes |
+| Balance | bug fixes, repo review |
+| Preserve | architecture changes |
+
+Classification inputs:
+
+- scope
+- risk
+- context size
+- expected reasoning depth
+
+#### Validation Architecture
+
+Validation uses a multi-stage ladder.
+
+##### Level 1 — Deterministic Checks
+
+Examples:
+
+- syntax validation
+- lint checks
+- type checking
+- schema validation
+
+##### Level 2 — Semantic Checks
+
+Examples:
+
+- unit tests
+- static analysis
+- policy rules
+
+##### Level 3 — Reviewer Models
+
+Examples:
+
+- code reviewer
+- security reviewer
+- compliance reviewer
+
+##### Level 4 — Human Review
+
+Required for:
+
+- high-risk outputs
+- unresolved conflicts
+- regulatory workflows
+
+#### Worker Self-Validation
+
+Workers return validation metadata.
+
+Example:
+
+```json
+{
+  "task_id": "123",
+  "confidence": 0.84,
+  "checks": {
+    "lint_pass": true,
+    "tests_passed": true
+  }
+}
+```
+
+This allows early rejection of low-quality outputs.
+
+#### Telemetry System
+
+Telemetry is required for adaptive routing.
+
+Metrics tracked:
+
+* success rate
+* validation pass rate
+* latency
+* compression profile performance
+* escalation frequency
+
+Repositories responsible:
+
+```
+Triton → runtime metrics
+AI-PORTAL → dashboards
+super-duper-spork → routing telemetry
+```
+
+#### Failure Escalation
+
+Escalation ladder:
+
+```
+Compress → Balance → Preserve
+```
+
+Triggers:
+
+* validation failure
+* low confidence
+* repeated retries
+
+#### Execution Examples
+
+##### Small Task
+
+```
+classification → compress
+model → worker_fast
+validation → deterministic checks
+```
+
+##### Medium Task
+
+```
+classification → balance
+workflow → planner + workers
+validation → semantic checks + reviewer
+```
+
+##### Large Task
+
+```
+classification → preserve
+workflow → hierarchical swarm
+validation → reviewer chain + human approval
+```
+
+#### Implementation Roadmap
+
+##### Phase 1 — Validation Infrastructure
+
+Repositories:
+
+```
+super-duper-spork
+Orchestra
+```
+
+Deliverables:
+
+* validation ladder
+* worker self-check protocol
+* task classification system
+
+##### Phase 2 — Compression Profiles
+
+Repositories:
+
+```
+Triton
+AI-PORTAL
+```
+
+Deliverables:
+
+* compression profiles
+* benchmark dashboards
+* mixed precision policies
+
+##### Phase 3 — Adaptive Routing
+
+Repositories:
+
+```
+super-duper-spork
+ProbFlow
+```
+
+Deliverables:
+
+* compression-aware routing
+* confidence scoring
+* escalation policies
+
+##### Phase 4 — Distributed Worker Expansion
+
+Repositories:
+
+```
+BUNNY
+super-duper-spork
+```
+
+Deliverables:
+
+* worker registry
+* remote task execution
+* edge worker support
+
+##### Phase 5 — Telemetry Optimization
+
+Repositories:
+
+```
+AI-PORTAL
+Triton
+ProbFlow
+```
+
+Deliverables:
+
+* compression telemetry
+* routing optimization
+* performance analytics
+
+#### Engineering Principles
+
+Shapeshifter follows a single rule:
+
+> Use the smallest reliable model and workflow capable of completing the task safely.
+
+Compression, routing, and validation all support this objective.
+
+#### Expected Outcomes
+
+Compared to traditional single-model systems:
+
+* improved compute efficiency
+* reduced validation burden
+* higher scalability
+* adaptive model deployment
+* improved failure containment
+
+#### Long-Term Vision
+
+Shapeshifter evolves the existing architecture into:
+
+```
+Adaptive AI Infrastructure Platform
+```
+
+Where:
+
+* routing decisions are telemetry-driven
+* models are dynamically selected
+* workflows adapt to task complexity
+* validation is automated by default
+
 ## License
 
 **AGPL-3.0-or-later** — See [LICENSE](LICENSE) for details.
