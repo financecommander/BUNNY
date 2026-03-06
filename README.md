@@ -271,6 +271,52 @@ See the [Orchestra README](https://github.com/financecommander/Orchestra#archite
 
 > **Engineering principle:** Use the smallest reliable model and workflow capable of completing the task safely.
 
+## Competitive Projection: System-Level Intelligence
+
+The Shapeshifter architecture competes with frontier LLM systems on **system-level capability**, not single-model capability.
+
+**BUNNY role:** Execution Plane — Distributed Worker Runtime
+
+BUNNY's distributed worker architecture is the foundation of the parallel execution advantage. Edge inference, secure task execution, and worker telemetry enable the system to run many specialist models simultaneously — the core mechanism that outperforms sequential frontier reasoning.
+
+### System Benchmark Matrix
+
+| Category | Frontier LLM | Shapeshifter Projection |
+|---|---|---|
+| Coding | very strong | equal or better |
+| Large repo analysis | weak | stronger |
+| Structured reasoning | strong | equal |
+| Operational automation | weak | stronger |
+| Research synthesis | strong | equal |
+| Cost efficiency | weak | stronger |
+| Scalability | limited | far stronger |
+
+### Advantage Mechanisms
+
+| Mechanism | Frontier LLM | Shapeshifter |
+|---|---|---|
+| Reasoning | sequential | parallel workers |
+| Task decomposition | single-pass | explicit planner |
+| Validation | self-consistency | layered (static → tests → review → human) |
+| Compute | massive GPUs | compressed + ternary + edge workers |
+
+### Simulation Projection
+
+| Metric | Frontier | Shapeshifter |
+|---|---|---|
+| Reasoning depth | 95 | 85 |
+| Parallel execution | 30 | 95 |
+| Validation reliability | 60 | 90 |
+| Cost efficiency | 40 | 90 |
+| Scalability | 35 | 95 |
+
+Frontier models win on deep reasoning. Shapeshifter wins on system-level capability.
+
+> **Shapeshifter is not a model competitor. It is an orchestration architecture that multiplies model capability.**
+
+See the [Orchestra README](https://github.com/financecommander/Orchestra#competitive-projection-system-level-intelligence) for the full competitive projection, benchmark categories, demonstration strategy, and long-term advantage analysis.
+
+
 ---
 
 ## License
