@@ -57,7 +57,7 @@ BUNNY is the **on-device/edge security layer** of the financecommander ecosystem
 ## Security Agents
 
 | Agent | Role | Triton Model |
-|-------|------|-------------|
+|-------|------|--------------|
 | **🔍 Threat Hunter** | Polls live threat feeds (Abuse.ch, OTX), correlates IOCs against local network traffic via vector similarity search (LanceDB). | Ternary anomaly classifier |
 | **🛡️ AI Guardian** | Monitors all traffic flowing to/from super-duper-spork (SendGrid webhooks, GHL API calls, LLM inference requests). Detects prompt injection, data exfiltration, and API abuse. | Ternary traffic sentinel |
 | **💣 Sandbox Agent** | Detonates suspicious payloads in Firecracker microVMs. Verdicts returned with confidence scores. | Ternary malware classifier |
@@ -229,7 +229,7 @@ Users choose which IPs to protect through the Flutter dashboard. Billing is hand
 ## Tech Stack
 
 | Layer | Technology |
-|-------|-----------|
+|-------|------------|
 | **Core engine** | Rust 1.85+ (edition 2024) |
 | **AI inference** | Triton ternary DSL (2-bit quantized models) |
 | **Cross-platform UI** | Flutter 3.29+ via `flutter_rust_bridge` FFI |
@@ -372,7 +372,7 @@ Responsibilities within the Shapeshifter architecture:
 | --------- | ---------------- | ------------------- | ------------------------------- |
 | Adaptive  | Routing & Policy | `ProbFlow`          | uncertainty scoring and routing |
 | Control   | Workflow DSL     | `Orchestra`         | task graph definition           |
-| Control   | Swarm Runtime    | `super-duper-spork` | scheduling and orchestration    |
+| Control   | Swarm Runtime    | `super-duper-spork` | scheduling, orchestration, live model routing (Phase 36) |
 | Execution | Model Runtime    | `Triton`            | AI inference and compression    |
 | Execution | Worker Runtime   | `BUNNY`             | distributed execution           |
 | Interface | UI & Telemetry   | `AI-PORTAL`         | monitoring and user interaction |
