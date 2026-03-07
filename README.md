@@ -454,3 +454,101 @@ See the [Orchestra README](https://github.com/financecommander/Orchestra#competi
   <strong>🐰 BUNNY sees everything. BUNNY protects everything.</strong><br/>
   <em>Powered by Triton ternary AI · Guarding the super-duper-spork Swarm</em>
 </p>
+
+---
+
+## Architecture Design Document — Rust Implementation
+
+> **STATUS: APPROVED**
+> **SUBJECT: BUNNY RUST AGENT ARCHITECTURE AND SANDBOX DESIGN**
+> **ROLE: SYSTEM ANALYSIS & ARCHITECTURE BLUEPRINT**
+
+The transition of the `BUNNY` edge worker to Rust requires a strict focus on memory safety, deterministic performance, and absolute isolation for untrusted, AI-generated subtasks. This document serves as the structural and integration analysis blueprint, perfectly primed to be handed off for primary and critical code generation.
+
+---
+
+### 1. System Objectives
+
+The `BUNNY` agent is the decentralized execution engine of the swarm. Its primary mandate is to receive highly decomposed tasks from the `super-duper-spork` scheduler, execute compiled Triton kernels or hybrid Python/Mojo scripts in a secure sandbox, and stream deterministic telemetry back to the control plane.
+
+---
+
+### 2. Core Subsystems
+
+#### A. Asynchronous Communication Layer (Tokio + Tonic)
+
+- **Protocol:** gRPC over mTLS (Mutual TLS)
+- **Mechanism:** `BUNNY` initiates a persistent bidirectional stream to `super-duper-spork`. This bypasses edge-firewall ingress issues, as the worker only makes outbound connections.
+- **Data Flow:**
+  - **Upstream:** Hardware capability registration, continuous heartbeat (load, thermal, memory metrics), and execution verdicts
+  - **Downstream:** Task payloads (Wasm binaries, Triton kernels, or execution graphs) and priority interrupts
+
+#### B. Secure Execution Sandbox (Isolation)
+
+Model-generated code is inherently untrusted. `BUNNY` must isolate the execution plane from the host OS.
+
+**Tier 1: WebAssembly (Wasmtime) — Logic Tasks**
+
+For tasks involving parsing, retrieval adapters, or data transformation (e.g., `calculus-tools` operations), payloads are compiled to `wasm32-wasi`.
+
+- Sub-millisecond startup times
+- Strictly bounded memory
+- Capability-based security — no network or filesystem access unless explicitly granted
+
+**Tier 2: MicroVMs (Firecracker) — GPU/Kernel Tasks**
+
+For hardware-accelerated tasks (Triton GPU kernels), Wasm is insufficient. `BUNNY` spawns lightweight microVMs.
+
+- Hardware-level virtualization (KVM) with a tiny footprint
+- Direct GPU passthrough for auto-tuning ternary matrix multiplication safely
+- Full isolation from host OS
+
+#### C. Telemetry and State Management (Tracing)
+
+- **Instrumentation:** `tracing` and `metrics` crates
+- **Confidence Scoring:** Execution state and hardware profiling are continuously monitored. If a task violates memory limits or timeouts, `BUNNY` kills the sandbox and returns a fatal `ExecutionVerdict` to the validation pipeline.
+
+---
+
+### 3. Cross-Compilation Matrix
+
+Rust's LLVM backend allows a single `BUNNY` codebase to target the entire decentralized swarm infrastructure.
+
+| Target Triple | Deployment Hardware | Use Case | Linkage |
+|---|---|---|---|
+| `x86_64-unknown-linux-musl` | Cloud VMs, heavy edge nodes | Primary GPU target for Triton kernel execution | Static |
+| `aarch64-unknown-linux-musl` | Raspberry Pi 4/5, routers | Parsing, task routing, low-cost CPU fallback | Static |
+| `x86_64-apple-darwin` | Mac Mini M-Series farm | iOS/macOS integration, Metal backend compilation | Dynamic |
+| `wasm32-wasi` | Browsers, serverless functions | Absolute lowest-latency data transformation | N/A |
+
+> The `musl` targets ensure zero dependency on the host's `glibc` version, making `BUNNY` a true drop-in binary on any Linux environment.
+
+---
+
+### 4. Ecosystem Integration Flow
+
+| # | Subsystem | Integration |
+|---|---|---|
+| 1 | **Distributed Task Scheduler** | `super-duper-spork` reads `BUNNY`'s capability manifest (GPU model, VRAM, CPU, memory) upon connection to route exact-match tasks |
+| 2 | **Task Decomposition Engine** | `Orchestra` ensures subtasks are small enough to run within `BUNNY`'s strict microVM timeout windows |
+| 3 | **Execution Validation Pipeline** | `BUNNY` returns a structured `ExecutionVerdict` (status, logs, hardware cost, confidence score) ready for merge arbitration |
+| 4 | **Model Runtime** | `Triton` provides compiled `.triton` artifacts; `BUNNY` loads and executes them via `TernaryRuntime` |
+| 5 | **Telemetry & Registry** | `AI-PORTAL` receives per-inference telemetry from every `BUNNY` worker to drive routing and model improvement |
+
+---
+
+### 5. `ExecutionVerdict` Struct
+
+```rust
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExecutionVerdict {
+    pub task_id: Uuid,
+    pub status: VerdictStatus,       // Success | Timeout | MemoryViolation | Fatal
+    pub stdout: String,
+    pub stderr: String,
+    pub hardware_cost: HardwareCost, // { cpu_ms, gpu_ms, memory_peak_mb }
+    pub confidence: f32,             // from Triton model inference
+    pub sandbox_tier: SandboxTier,   // Wasm | MicroVM
+    pub duration_ms: u64,
+}
+```
