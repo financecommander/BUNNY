@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::cloaked::{CloakedEnvelope, CloakedPayload, OpaqueRouteTag};
 use crate::error::{CryptoError, Result};
 use crate::identity::NodeRole;
 use crate::ternary::{TernaryPacket, TernaryPayloadType};
@@ -101,13 +103,71 @@ pub struct ExecutionResponse {
 ///   → classify security → validate role authorization → route to model
 ///   → execute inference → wrap result as TernaryPacket → encrypt → return
 /// ```
+/// Lookup table mapping opaque route tags to concrete model routes.
+///
+/// Only the execution boundary holds this table — relays and other
+/// intermediate nodes see only the opaque 16-byte tag.
+pub struct OpaqueRouteTable {
+    routes: HashMap<OpaqueRouteTag, ModelRoute>,
+}
+
+impl OpaqueRouteTable {
+    pub fn new() -> Self {
+        Self {
+            routes: HashMap::new(),
+        }
+    }
+
+    /// Register a model route, returning its opaque tag.
+    /// Uses the model_hash + a session salt to derive a deterministic tag.
+    pub fn register(&mut self, route: ModelRoute, session_salt: &[u8; 16]) -> OpaqueRouteTag {
+        let tag = OpaqueRouteTag::derive(&route.model_hash, session_salt);
+        self.routes.insert(tag, route);
+        tag
+    }
+
+    /// Resolve an opaque tag to a model route.
+    pub fn resolve(&self, tag: &OpaqueRouteTag) -> Option<&ModelRoute> {
+        self.routes.get(tag)
+    }
+
+    /// Remove a route by its tag.
+    pub fn remove(&mut self, tag: &OpaqueRouteTag) -> Option<ModelRoute> {
+        self.routes.remove(tag)
+    }
+
+    /// Number of registered routes.
+    pub fn len(&self) -> usize {
+        self.routes.len()
+    }
+
+    /// Whether the table is empty.
+    pub fn is_empty(&self) -> bool {
+        self.routes.is_empty()
+    }
+}
+
 pub struct ExecutionBoundary {
     transport: NodeTransport,
+    route_table: OpaqueRouteTable,
 }
 
 impl ExecutionBoundary {
     pub fn new(transport: NodeTransport) -> Self {
-        Self { transport }
+        Self {
+            transport,
+            route_table: OpaqueRouteTable::new(),
+        }
+    }
+
+    /// Get a mutable reference to the opaque route table.
+    pub fn route_table_mut(&mut self) -> &mut OpaqueRouteTable {
+        &mut self.route_table
+    }
+
+    /// Get a reference to the opaque route table.
+    pub fn route_table(&self) -> &OpaqueRouteTable {
+        &self.route_table
     }
 
     /// Decrypt an incoming envelope and parse it as a ternary packet.
@@ -273,6 +333,92 @@ impl ExecutionBoundary {
         })
     }
 
+    /// Decrypt a cloaked envelope and resolve its opaque route tag.
+    ///
+    /// This is the cloaked equivalent of `decrypt_request()`. The cloaked
+    /// envelope hides sender/version/suite inside the ciphertext. The route
+    /// tag is resolved via the local OpaqueRouteTable.
+    pub async fn decrypt_cloaked(
+        &self,
+        peer_role: NodeRole,
+        envelope: &CloakedEnvelope,
+    ) -> Result<(ExecutionRequest, Option<ModelRoute>)> {
+        // 1. Decrypt through the transport layer
+        let payload = self.transport.receive_cloaked(envelope).await?;
+
+        // 2. Parse inner payload as TernaryPacket
+        let packet = TernaryPacket::from_bytes(&payload.payload)?;
+
+        // 3. Classify and authorize
+        let security_class = SecurityClass::from_payload_type(packet.header.payload_type);
+        if !security_class.is_role_authorized(peer_role) {
+            warn!(
+                role = ?peer_role,
+                security_class = ?security_class,
+                "unauthorized payload type for role (cloaked)"
+            );
+            return Err(CryptoError::ValidationFailed(format!(
+                "role {:?} not authorized for {:?} payloads",
+                peer_role, security_class
+            )));
+        }
+
+        // 4. Resolve opaque route tag
+        let route = self.route_table.resolve(&envelope.header.route_tag).cloned();
+
+        info!(
+            session = ?envelope.header.session_id,
+            sender = ?payload.sender,
+            route_resolved = route.is_some(),
+            "cloaked request decrypted at execution boundary"
+        );
+
+        let request = ExecutionRequest {
+            session_id: envelope.header.session_id.clone(),
+            security_class,
+            packet,
+            received_at: payload.timestamp_ms,
+        };
+
+        Ok((request, route))
+    }
+
+    /// Encrypt a response as a cloaked envelope.
+    pub async fn encrypt_response_cloaked(
+        &self,
+        session_id: &SessionId,
+        route_tag: OpaqueRouteTag,
+        response: &ExecutionResponse,
+    ) -> Result<CloakedEnvelope> {
+        let payload_bytes = response.packet.to_bytes();
+        self.transport
+            .send_cloaked(session_id, route_tag, &payload_bytes)
+            .await
+    }
+
+    /// Send a ternary packet as a cloaked envelope.
+    pub async fn send_ternary_cloaked(
+        &self,
+        session_id: &SessionId,
+        route_tag: OpaqueRouteTag,
+        packet: &TernaryPacket,
+    ) -> Result<CloakedEnvelope> {
+        let payload_bytes = packet.to_bytes();
+        self.transport
+            .send_cloaked(session_id, route_tag, &payload_bytes)
+            .await
+    }
+
+    /// Receive a cloaked ternary packet — decrypt and parse.
+    pub async fn receive_ternary_cloaked(
+        &self,
+        envelope: &CloakedEnvelope,
+    ) -> Result<(TernaryPacket, CloakedPayload)> {
+        let payload = self.transport.receive_cloaked(envelope).await?;
+        let packet = TernaryPacket::from_bytes(&payload.payload)?;
+        Ok((packet, payload))
+    }
+
     pub fn transport(&self) -> &NodeTransport {
         &self.transport
     }
@@ -282,6 +428,7 @@ impl ExecutionBoundary {
 mod tests {
     use super::*;
     use crate::cipher::CipherSuite;
+    use crate::cloaked::OpaqueRouteTag;
     use crate::identity::{NodeCapabilities, NodeRole, SwarmNode};
     use crate::ternary::TernaryPacket;
     use crate::transport::NodeTransport;
@@ -491,6 +638,111 @@ mod tests {
             .unwrap();
 
         assert_eq!(route.shard_assignment, Some((3, 8)));
+    }
+
+    #[tokio::test]
+    async fn cloaked_send_receive_ternary() {
+        let (mut gateway, worker, session_id) = setup_pair().await;
+
+        // Register a route at the gateway
+        let salt = [0x42; 16];
+        let model_hash = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(b"threat_classifier");
+            let r: [u8; 32] = h.finalize().into();
+            r
+        };
+        let target_worker = AgentId::new();
+        let route = ModelRoute {
+            model_hash,
+            target_worker: target_worker.clone(),
+            shard_assignment: None,
+        };
+        let tag = gateway.route_table_mut().register(route, &salt);
+
+        // Worker sends a cloaked inference request
+        let request = TernaryPacket::inference_request(
+            "threat_classifier",
+            b"cloaked inference".to_vec(),
+        );
+        let envelope = worker
+            .send_ternary_cloaked(&session_id, tag, &request)
+            .await
+            .unwrap();
+
+        // Gateway decrypts and resolves route
+        let (exec_req, resolved_route) = gateway
+            .decrypt_cloaked(NodeRole::Worker, &envelope)
+            .await
+            .unwrap();
+
+        assert_eq!(exec_req.security_class, SecurityClass::InferenceInput);
+        assert_eq!(exec_req.packet.data, b"cloaked inference");
+        assert!(resolved_route.is_some());
+        assert_eq!(resolved_route.unwrap().target_worker, target_worker);
+    }
+
+    #[tokio::test]
+    async fn cloaked_route_table_operations() {
+        let salt = [0x11; 16];
+        let mut table = OpaqueRouteTable::new();
+        assert!(table.is_empty());
+
+        let route = ModelRoute {
+            model_hash: [0xAA; 32],
+            target_worker: AgentId::new(),
+            shard_assignment: Some((0, 4)),
+        };
+        let tag = table.register(route, &salt);
+        assert_eq!(table.len(), 1);
+
+        let resolved = table.resolve(&tag).unwrap();
+        assert_eq!(resolved.model_hash, [0xAA; 32]);
+        assert_eq!(resolved.shard_assignment, Some((0, 4)));
+
+        // Unknown tag returns None
+        let unknown = OpaqueRouteTag::random();
+        assert!(table.resolve(&unknown).is_none());
+
+        // Remove
+        table.remove(&tag);
+        assert!(table.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cloaked_response_roundtrip() {
+        let (gateway, worker, session_id) = setup_pair().await;
+
+        // Worker sends cloaked request
+        let tag = OpaqueRouteTag::random();
+        let request = TernaryPacket::inference_request(
+            "model_x",
+            b"input".to_vec(),
+        );
+        let _envelope = worker
+            .send_ternary_cloaked(&session_id, tag, &request)
+            .await
+            .unwrap();
+
+        // Gateway sends cloaked response
+        let response = ExecutionResponse {
+            packet: TernaryPacket::inference_result("model_x", vec![1, 3], vec![0x01, 0x02, 0x03]),
+        };
+        let resp_envelope = gateway
+            .encrypt_response_cloaked(&session_id, tag, &response)
+            .await
+            .unwrap();
+
+        // Worker decrypts the cloaked response
+        let (packet, meta) = worker
+            .receive_ternary_cloaked(&resp_envelope)
+            .await
+            .unwrap();
+
+        assert_eq!(packet.header.payload_type, TernaryPayloadType::InferenceResult);
+        assert_eq!(packet.data, vec![0x01, 0x02, 0x03]);
+        assert_eq!(meta.version, crate::types::PROTOCOL_VERSION);
     }
 
     #[tokio::test]

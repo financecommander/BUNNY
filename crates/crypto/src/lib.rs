@@ -1,5 +1,6 @@
 pub mod artifact;
 pub mod cipher;
+pub mod cloaked;
 pub mod envelope;
 pub mod error;
 pub mod execution;
@@ -15,11 +16,16 @@ pub mod transport;
 pub mod types;
 
 pub use artifact::{ArtifactManifest, ArtifactType};
+pub use cloaked::{
+    CloakedEnvelope, CloakedHeader, CloakedPayload, Compartment, CompartmentalizedView,
+    OpaqueRouteTag, SizeBucket, TrafficPolicy,
+};
 pub use cipher::{CipherSuite, SwarmCipher};
 pub use envelope::SwarmEnvelope;
 pub use error::{CryptoError, Result};
 pub use execution::{
-    ExecutionBoundary, ExecutionRequest, ExecutionResponse, ModelRoute, SecurityClass,
+    ExecutionBoundary, ExecutionRequest, ExecutionResponse, ModelRoute, OpaqueRouteTable,
+    SecurityClass,
 };
 pub use gateway::{DecryptedRequest, InferenceGateway, InferenceResult};
 pub use hybrid_sign::{HybridSignature, HybridSigningKey, HybridVerifyingKey, SignatureScheme};

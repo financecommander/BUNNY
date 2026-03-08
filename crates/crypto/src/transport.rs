@@ -1,6 +1,7 @@
 use tracing::info;
 
 use crate::cipher::{CipherSuite, SwarmCipher};
+use crate::cloaked::{CloakedEnvelope, CloakedPayload, OpaqueRouteTag, TrafficPolicy};
 use crate::envelope::SwarmEnvelope;
 use crate::error::{CryptoError, Result};
 use crate::identity::{NodeIdentity, SignedAnnouncement, SwarmNode};
@@ -34,9 +35,14 @@ pub struct HandshakeAccept {
 /// 3. Responder sends HandshakeAccept (signed identity + X25519 public + ML-KEM ciphertext)
 /// 4. Initiator verifies signature, completes KEM, derives session key
 /// 5. Both sides have an authenticated, encrypted session
+///
+/// Supports two transport modes:
+/// - Standard: `send()`/`receive()` — full header metadata (SwarmEnvelope)
+/// - Cloaked: `send_cloaked()`/`receive_cloaked()` — metadata-minimized (CloakedEnvelope)
 pub struct NodeTransport {
     node: SwarmNode,
     sessions: SessionStore,
+    traffic_policy: TrafficPolicy,
 }
 
 impl NodeTransport {
@@ -45,7 +51,28 @@ impl NodeTransport {
         Self {
             node,
             sessions: SessionStore::new(max_age),
+            traffic_policy: TrafficPolicy::disabled(),
         }
+    }
+
+    /// Create a transport with a specific traffic policy.
+    pub fn with_policy(node: SwarmNode, policy: TrafficPolicy) -> Self {
+        let max_age = node.trust_policy.max_session_age_ms;
+        Self {
+            node,
+            sessions: SessionStore::new(max_age),
+            traffic_policy: policy,
+        }
+    }
+
+    /// Get the current traffic policy.
+    pub fn traffic_policy(&self) -> &TrafficPolicy {
+        &self.traffic_policy
+    }
+
+    /// Update the traffic policy at runtime.
+    pub fn set_traffic_policy(&mut self, policy: TrafficPolicy) {
+        self.traffic_policy = policy;
     }
 
     /// Initiate a handshake to a peer node.
@@ -279,6 +306,53 @@ impl NodeTransport {
         }
     }
 
+    /// Send a metadata-minimized cloaked envelope on an established session.
+    ///
+    /// The cloaked envelope hides sender identity, cipher suite, version,
+    /// and timestamp inside the encrypted payload. Only session_id, sequence,
+    /// nonce, and an opaque route tag are visible in the plaintext header.
+    pub async fn send_cloaked(
+        &self,
+        session_id: &SessionId,
+        route_tag: OpaqueRouteTag,
+        payload: &[u8],
+    ) -> Result<CloakedEnvelope> {
+        let agent_id = self.node.agent_id().clone();
+        let result = self
+            .sessions
+            .get_mut(session_id, |session| {
+                session.seal_cloaked(&agent_id, route_tag, payload)
+            })
+            .await;
+
+        match result {
+            Some(Ok(envelope)) => Ok(envelope),
+            Some(Err(e)) => Err(e),
+            None => Err(CryptoError::SessionNotFound(session_id.clone())),
+        }
+    }
+
+    /// Receive and decrypt a cloaked envelope, recovering the full inner metadata.
+    pub async fn receive_cloaked(
+        &self,
+        envelope: &CloakedEnvelope,
+    ) -> Result<CloakedPayload> {
+        let result = self
+            .sessions
+            .get_mut(&envelope.header.session_id, |session| {
+                session.open_cloaked(envelope)
+            })
+            .await;
+
+        match result {
+            Some(Ok(payload)) => Ok(payload),
+            Some(Err(e)) => Err(e),
+            None => Err(CryptoError::SessionNotFound(
+                envelope.header.session_id.clone(),
+            )),
+        }
+    }
+
     /// Prune expired sessions.
     pub async fn prune_expired(&self) {
         self.sessions.prune_expired().await;
@@ -357,6 +431,79 @@ mod tests {
         let (init, _) = orchestrator.initiate_handshake();
         let result = gateway.accept_handshake(&init).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn cloaked_send_receive() {
+        use crate::cloaked::OpaqueRouteTag;
+
+        let gateway = NodeTransport::new(SwarmNode::generate(NodeRole::Gateway, test_caps()));
+        let worker = NodeTransport::new(SwarmNode::generate(NodeRole::Worker, test_caps()));
+
+        let (init, ephemeral) = worker.initiate_handshake();
+        let accept = gateway.accept_handshake(&init).await.unwrap();
+        let session_id = worker.complete_handshake(&accept, ephemeral).await.unwrap();
+
+        // Send cloaked message
+        let route_tag = OpaqueRouteTag::derive(&[0xAA; 32], &[0xBB; 16]);
+        let envelope = worker
+            .send_cloaked(&session_id, route_tag, b"cloaked inference")
+            .await
+            .unwrap();
+
+        // Only session_id, sequence, nonce, route_tag visible
+        assert_eq!(envelope.header.session_id, session_id);
+        assert_eq!(envelope.header.sequence, 0);
+        assert_eq!(envelope.header.route_tag, route_tag);
+
+        // Gateway receives and decrypts — full metadata recovered
+        let payload = gateway.receive_cloaked(&envelope).await.unwrap();
+        assert_eq!(payload.payload, b"cloaked inference");
+        assert_eq!(payload.sender, worker.node_identity().node_id);
+    }
+
+    #[tokio::test]
+    async fn cloaked_metadata_invisible_on_wire() {
+        use crate::cloaked::{OpaqueRouteTag, CLOAKED_HEADER_SIZE};
+
+        let gateway = NodeTransport::new(SwarmNode::generate(NodeRole::Gateway, test_caps()));
+        let worker = NodeTransport::new(SwarmNode::generate(NodeRole::Worker, test_caps()));
+
+        let (init, eph) = worker.initiate_handshake();
+        let accept = gateway.accept_handshake(&init).await.unwrap();
+        let session_id = worker.complete_handshake(&accept, eph).await.unwrap();
+
+        let envelope = worker
+            .send_cloaked(&session_id, OpaqueRouteTag::random(), b"secret")
+            .await
+            .unwrap();
+
+        let wire = envelope.to_bytes();
+        let header_bytes = &wire[..CLOAKED_HEADER_SIZE];
+
+        // Worker's agent ID must NOT appear in plaintext header
+        let worker_id_bytes = worker.node_identity().node_id.as_bytes();
+        assert!(!header_bytes.windows(16).any(|w| w == worker_id_bytes));
+    }
+
+    #[tokio::test]
+    async fn traffic_policy_configurable() {
+        use crate::cloaked::TrafficPolicy;
+
+        let mut transport = NodeTransport::new(SwarmNode::generate(NodeRole::Worker, test_caps()));
+
+        // Default is disabled
+        assert!(!transport.traffic_policy().jitter_enabled);
+
+        // Switch to cloaked mode
+        transport.set_traffic_policy(TrafficPolicy::cloaked());
+        assert!(transport.traffic_policy().jitter_enabled);
+        assert!(transport.traffic_policy().cover_traffic_enabled);
+
+        // Switch to balanced
+        transport.set_traffic_policy(TrafficPolicy::balanced());
+        assert!(transport.traffic_policy().jitter_enabled);
+        assert!(!transport.traffic_policy().cover_traffic_enabled);
     }
 
     #[tokio::test]

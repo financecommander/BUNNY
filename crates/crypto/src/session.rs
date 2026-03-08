@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::cipher::SwarmCipher;
+use crate::cloaked::{CloakedEnvelope, CloakedPayload, OpaqueRouteTag};
 use crate::envelope::SwarmEnvelope;
 use crate::error::{CryptoError, Result};
 use crate::types::{AgentId, SessionId};
@@ -25,6 +26,31 @@ impl SwarmSession {
         self.send_sequence += 1;
         self.update_activity();
         SwarmEnvelope::seal(&self.cipher, sender, &self.session_id, seq, payload)
+    }
+
+    /// Encrypt a payload into a cloaked envelope (metadata-minimized).
+    pub fn seal_cloaked(
+        &mut self,
+        sender: &AgentId,
+        route_tag: OpaqueRouteTag,
+        payload: &[u8],
+    ) -> Result<CloakedEnvelope> {
+        let seq = self.send_sequence;
+        self.send_sequence += 1;
+        self.update_activity();
+        CloakedEnvelope::seal(&self.cipher, sender, &self.session_id, seq, route_tag, payload)
+    }
+
+    /// Decrypt a cloaked envelope from this session's peer.
+    pub fn open_cloaked(&mut self, envelope: &CloakedEnvelope) -> Result<CloakedPayload> {
+        // Replay protection
+        if envelope.header.sequence <= self.recv_sequence && self.recv_sequence > 0 {
+            return Err(CryptoError::InvalidEnvelope("replay detected".into()));
+        }
+        let payload = envelope.open(&self.cipher)?;
+        self.recv_sequence = envelope.header.sequence;
+        self.update_activity();
+        Ok(payload)
     }
 
     /// Decrypt an envelope from this session's peer.
