@@ -9,5 +9,11 @@ dependencies:
     sdk: flutter
   flutter_rust_bridge: ^2.5.0
   provider: ^6.1.2
+  web_socket_channel: ^3.0.0
+  fl_chart: ^0.72.0
+  intl: ^0.20.1
+  collection: ^1.19.1
 flutter:
   uses-material-design: true
+  assets:
+    - assets/models/
