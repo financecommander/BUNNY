@@ -7,6 +7,7 @@ authors.workspace = true
 license.workspace = true
 build = "build.rs"
 [dependencies]
+bunny-crypto = { path = "../crypto" }
 anyhow = "1.0.95"
 thiserror = "2.0.11"
 tracing = "0.1.41"
@@ -20,6 +21,6 @@ tonic = "0.14.5"
 prost = "0.14.3"
 uuid = { version = "1.16", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-stripe = { version = "0.38", features = ["async"] }
+async-stripe = { version = "1.0.0-rc.2", features = ["rustls-tls-webpki-roots"] }
 [build-dependencies]
 tonic-build = "0.14.5"

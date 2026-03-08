@@ -1,0 +1,51 @@
+[package]
+name = "bunny-crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Encrypted swarm communication for BUNNY: hybrid PQ key exchange + auto-negotiating AEAD"
+
+[dependencies]
+# AEAD ciphers
+aes-gcm = "0.10"
+chacha20poly1305 = "0.10"
+aead = { version = "0.5", features = ["rand_core"] }
+
+# Key exchange
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+ml-kem = "0.2"
+hybrid-array = "0.2"
+
+# Key derivation
+hkdf = "0.12"
+sha2 = "0.10"
+
+# CPU feature detection
+cpufeatures = "0.2"
+
+# Secure randomness
+rand = "0.8"
+rand_core = "0.6"
+
+# Secure memory wiping
+zeroize = { version = "1.8", features = ["derive"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+bytes = "1.9"
+
+# Error handling & logging
+thiserror = "2.0"
+tracing = "0.1"
+
+# Async runtime (for SessionStore)
+tokio = { version = "1.43", features = ["sync", "time"] }
+
+# UUID for AgentId
+uuid = { version = "1.16", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tokio = { version = "1.43", features = ["full", "test-util"] }
+serde_json = "1.0"

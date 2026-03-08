@@ -6,6 +6,6 @@ rust-version.workspace = true
 [dependencies]
 bunny-core = { path = "../core" }
 bunny-agents = { path = "../agents" }
-aya = { version = "0.15.0", features = ["async"] }
+aya = { version = "0.13.1", features = ["async_tokio"] }
 pnet = "0.35.0"
 tokio = { version = "1.43", features = ["full"] }
