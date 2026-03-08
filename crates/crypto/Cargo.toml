@@ -15,6 +15,11 @@ aead = { version = "0.5", features = ["rand_core"] }
 
 # Signing
 ed25519-dalek = { version = "2.1", features = ["rand_core", "serde"] }
+ml-dsa = "0.1.0-rc.7"
+
+# ML-DSA uses newer ecosystem versions; renamed to coexist with ml-kem stack
+hybrid-array-pq = { package = "hybrid-array", version = "0.4" }
+rand-pq = { package = "rand", version = "0.10", default-features = false, features = ["thread_rng", "std", "std_rng", "sys_rng"] }
 
 # Key exchange
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
