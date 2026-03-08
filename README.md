@@ -172,6 +172,252 @@ These models are compiled through Triton's DSL and exported as ONNX (Phase 1) or
 
 ---
 
+## Triton-backed Inference Architecture
+
+**Triton-backed inference** means the swarm routes all model execution through the **Triton inference runtime**, which compiles and executes the model kernels. In your stack this should serve the **ternary compressed model**.
+
+Below is the correct architecture for your system.
+
+---
+
+### System Stack
+
+```text
+User / API
+   ↓
+Encrypted Bunny Swarm
+   ↓
+Secure Inference Router
+   ↓
+Triton Inference Runtime
+   ↓
+Ternary Model Kernels
+```
+
+Roles:
+
+| Layer         | Responsibility                    |
+| ------------- | --------------------------------- |
+| bunny         | encrypted swarm communication     |
+| router        | model selection + routing         |
+| Triton        | compile and execute kernels       |
+| ternary model | compressed inference architecture |
+
+---
+
+### Triton-backed Inference Flow
+
+#### 1. Request enters swarm
+
+Agent creates inference request.
+
+```json
+{
+  "type": "MODEL_CALL",
+  "model": "ternary_llm",
+  "payload": "encrypted_prompt_blob"
+}
+```
+
+---
+
+#### 2. Bunny decrypts at execution boundary
+
+Inside the secure runtime:
+
+```
+decrypt → validate → route
+```
+
+---
+
+#### 3. Router sends request to Triton
+
+Example endpoint:
+
+```
+http://triton-server:8000/v2/models/ternary_llm/infer
+```
+
+Payload:
+
+```json
+{
+  "inputs": [
+    {
+      "name": "input_ids",
+      "datatype": "INT32",
+      "shape": [1, 256],
+      "data": [...]
+    }
+  ]
+}
+```
+
+---
+
+#### 4. Triton executes compiled kernels
+
+Triton handles:
+
+```
+model loading
+kernel scheduling
+GPU execution
+tensor memory
+```
+
+For your stack it should run:
+
+```
+ternary kernels
+compressed weights
+quantized execution
+```
+
+---
+
+#### 5. Result returned to swarm
+
+Triton response:
+
+```json
+{
+ "outputs":[
+   {
+     "name":"logits",
+     "shape":[1,256,32000]
+   }
+ ]
+}
+```
+
+Swarm then:
+
+```
+encrypt → send → requesting agent
+```
+
+---
+
+### Required Components in the Repo
+
+To truly be **Triton-backed inference**, the system must contain:
+
+#### Model Repository
+
+Typical structure:
+
+```
+model_repository/
+   ternary_llm/
+       config.pbtxt
+       1/
+         model.pt
+```
+
+---
+
+#### Triton Server
+
+Example run command:
+
+```
+tritonserver --model-repository=/models
+```
+
+---
+
+#### Bunny Inference Client
+
+The swarm must call Triton using:
+
+* HTTP client
+* gRPC client
+* Triton Python API
+
+Example:
+
+```python
+import tritonclient.http as httpclient
+client = httpclient.InferenceServerClient("triton-server:8000")
+response = client.infer("ternary_llm", inputs)
+```
+
+---
+
+### Security Boundary
+
+Your encryption model should decrypt **only at the inference gateway**, not earlier.
+
+Correct boundary:
+
+```text
+Encrypted swarm
+   ↓
+Inference gateway (decrypt)
+   ↓
+Triton runtime
+   ↓
+Result
+   ↓
+Re-encrypt
+```
+
+---
+
+### Why Triton Matters for Your Architecture
+
+Triton gives:
+
+• GPU scheduling
+• high-throughput inference
+• model versioning
+• batching
+• kernel compilation support
+
+This is critical for a **compressed ternary architecture**, because the runtime must efficiently execute the custom kernels.
+
+---
+
+### Correct Design Statement
+
+Your system should be described as:
+
+```
+An encrypted AI swarm whose inference layer is executed through Triton-backed runtime serving ternary compressed models.
+```
+
+---
+
+### Next Step (Important)
+
+To fully align with your **compression + quantum-proof architecture**, the next engineering step is:
+
+**compile the ternary kernels directly into Triton runtime paths** rather than using standard PyTorch fallback.
+
+That creates:
+
+```
+native ternary GPU kernels
++
+compressed weight loading
++
+high throughput swarm inference
+```
+
+---
+
+If useful, the next thing to map is the **exact runtime pipeline**:
+
+```
+swarm → router → Triton → ternary kernels → GPU
+```
+
+including where compression, encryption, and batching occur.
+
+---
+
 ## Phase 2 Artifact Contract
 
 Interface contract between Triton (producer) and BUNNY (consumer). Triton owns the artifact format; BUNNY owns the loader and runtime binding.
