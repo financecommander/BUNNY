@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/BUNNY-AI%20Machine%20Defender-ff4500?style=for-the-badge&logo=rust&logoColor=white" alt="BUNNY Badge"/>
+  <img src="https://img.shields.io/badge/BUNNY-AI%20Machine%20Defender-ff4500?style=for-the-badge&amp;logo=rust&amp;logoColor=white" alt="BUNNY Badge"/>
   <img src="https://img.shields.io/badge/Triton%20Powered-2--bit%20Ternary%20AI-blueviolet?style=for-the-badge" alt="Triton Badge"/>
   <img src="https://img.shields.io/badge/License-AGPL--3.0--or--later-green?style=for-the-badge" alt="License"/>
 </p>
@@ -30,7 +30,7 @@ BUNNY is the **on-device/edge security layer** of the financecommander ecosystem
 │              (Swarm Mainframe / Orchestrator)                │
 │         SendGrid · GHL · LLM pipelines · Agents             │
 └──────────────────────┬──────────────────────────────────────┘
-                       │  gRPC / mTLS
+                       │  gRPC / mTLS (planned)
 ┌──────────────────────▼──────────────────────────────────────┐
 │                        🐰 BUNNY                             │
 │  ┌──────────┐ ┌──────────┐ ┌─────────┐ ┌────────────────┐  │
@@ -39,8 +39,8 @@ BUNNY is the **on-device/edge security layer** of the financecommander ecosystem
 │  └────┬─────┘ └────┬─────┘ └────┬────┘ └───────┬────────┘  │
 │       │            │            │               │           │
 │       └────────────┴────────────┴───────────────┘           │
-│                    Triton Ternary Engine                     │
-│               (2-bit models · ./triton-core)                │
+│              Triton Pure Agent Runtime (Rust)                │
+│          (every agent is a Triton ternary agent)            │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │               bunny-core (Rust)                      │   │
 │  │  Licensing · Turso DB · LanceDB vectors · Stripe     │   │
@@ -58,11 +58,11 @@ BUNNY is the **on-device/edge security layer** of the financecommander ecosystem
 
 | Agent | Role | Triton Model |
 |-------|------|--------------|
-| **🔍 Threat Hunter** | Polls live threat feeds (Abuse.ch, OTX), correlates IOCs against local network traffic via vector similarity search (LanceDB). | Ternary anomaly classifier |
-| **🛡️ AI Guardian** | Monitors all traffic flowing to/from super-duper-spork (SendGrid webhooks, GHL API calls, LLM inference requests). Detects prompt injection, data exfiltration, and API abuse. | Ternary traffic sentinel |
-| **💣 Sandbox Agent** | Detonates suspicious payloads in Firecracker microVMs. Verdicts returned with confidence scores. | Ternary malware classifier |
-| **📡 IoT Firewall** | Deep packet inspection at the edge for IoT/smart devices. Blocks C2 callbacks, DNS tunneling, and lateral movement. | Ternary packet filter |
-| **🧠 Learning & Adaptation** | Continuously retrains local ternary models from new threat data without cloud dependency. Federated learning ready. | Triton on-device trainer |
+| **🔍 Threat Hunter** | Polls live threat feeds (Abuse.ch, OTX), correlates IOCs against local network traffic via vector similarity search (LanceDB). | `threat_classifier` |
+| **🛡️ AI Guardian** | Monitors all traffic flowing to/from super-duper-spork (SendGrid webhooks, GHL API calls, LLM inference requests). Detects prompt injection, data exfiltration, and API abuse. 32-dim features, 6 threat categories, rate limiting. | `traffic_sentinel` |
+| **💣 Sandbox Agent** | Detonates suspicious payloads in Firecracker microVMs. Verdicts returned with confidence scores. | `malware_classifier` |
+| **📡 IoT Firewall** | Deep packet inspection at the edge for IoT/smart devices. Blocks C2 callbacks, DNS tunneling, and lateral movement. 24-dim packet features. | `packet_filter` |
+| **🧠 Learning &amp; Adaptation** | Continuously retrains local ternary models from new threat data without cloud dependency. Federated learning with gradient accumulation and re-quantization. | `anomaly_detector` |
 
 ---
 
@@ -70,28 +70,52 @@ BUNNY is the **on-device/edge security layer** of the financecommander ecosystem
 
 ````text
 BUNNY/
-├── Cargo.toml                 # Rust workspace root
+├── Cargo.toml                 # Rust workspace root (5 crates)
 ├── .env.example               # Environment variables template
-├── triton-core/               # Triton ternary engine (git submodule)
 ├── crates/
 │   ├── core/                  # bunny-core: licensing, DB, vectors, gRPC, auth
 │   │   ├── src/
 │   │   │   ├── lib.rs
-│   │   │   └── licensing.rs   # First-IP-free + $1/mo per extra IP (Stripe)
-│   │   └── build.rs           # Protobuf / gRPC codegen (tonic-build)
+│   │   │   ├── licensing.rs   # First-IP-free + $1/mo per extra IP (Stripe)
+│   │   │   ├── vector.rs      # LanceDB threat vector store + similarity search
+│   │   │   ├── jwt.rs         # JWT token creation/verification
+│   │   │   ├── models.rs      # Data models (User, Device, Threat, NetworkEvent)
+│   │   │   └── error.rs       # BunnyError enum
+│   │   └── build.rs           # Protobuf / gRPC codegen (tonic-prost-build)
 │   ├── agents/                # bunny-agents: all 5 security agent personas
 │   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── triton_agent.rs    # TritonAgent: ONNX model loading + inference (ort)
+│   │       ├── ternary_engine.rs  # Phase 2 native Rust ternary engine (2-bit packed matmul)
+│   │       ├── guardian.rs        # AI Guardian: traffic monitoring, PII/injection detection
+│   │       ├── swarm.rs           # Agent swarm coordination
+│   │       ├── learning.rs        # On-device federated retraining
+│   │       └── prompts.rs         # Agent prompt templates
 │   ├── network/               # bunny-network: packet capture, DPI, firewall rules
 │   │   └── src/
-│   └── sandbox/               # bunny-sandbox: Firecracker microVM detonation
+│   │       ├── lib.rs
+│   │       ├── inspector.rs       # eBPF deep packet inspection (aya)
+│   │       └── iot_firewall.rs    # IoT edge DPI: C2, DNS tunnel, port scan detection
+│   ├── sandbox/               # bunny-sandbox: Firecracker microVM detonation
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── firecracker.rs     # MicroVM payload detonation
+│   │       └── threat_hunter.rs   # Live feed polling (Abuse.ch + OTX)
+│   └── ffi/                   # bunny-ffi: Rust ↔ Flutter C ABI bridge
 │       └── src/
-│           ├── lib.rs
-│           ├── firecracker.rs # MicroVM payload detonation
-│           └── threat_hunter.rs
+│           └── lib.rs             # model_create, model_infer, guardian_inspect, trainer ops
 ├── flutter/
-│   ├── pubspec.yaml           # Flutter app (v0.6.0+6)
+│   ├── pubspec.yaml           # Flutter app (v1.0.0+1)
 │   └── lib/
-│       └── main.dart          # Cross-platform dashboard UI
+│       ├── main.dart          # App state management + routing
+│       ├── ffi/
+│       │   └── bunny_ffi.dart     # Dart FFI bindings to Rust C ABI
+│       ├── screens/
+│       │   ├── dashboard_screen.dart      # Summary cards, agent fleet overview
+│       │   ├── device_manager_screen.dart  # Toggle device protection, pricing
+│       │   ├── agent_status_screen.dart    # Agent fleet status indicators
+│       │   └── upgrade_screen.dart         # Free vs Pro tier, checkout flow
+│       └── widgets/
 └── README.md
 ````
 
@@ -101,60 +125,56 @@ BUNNY/
 
 BUNNY's brain runs exclusively on **Triton** — the ternary neural network DSL from [`financecommander/Triton`](https://github.com/financecommander/Triton).
 
-- **All five agents** use Triton-compiled 2-bit ternary models for inference
-- Models are stored in `./triton-core` (git submodule) or loaded via `cargo` dependency
-- **No FP32 models or heavy frameworks** — optimized for constrained hardware:
-  - 📱 Mobile (iOS / Android)
-  - 📡 Routers & gateways
-  - 📺 Smart TVs
-  - 🍓 Raspberry Pi & embedded Linux
+- **All five agents** use Triton ternary models for inference
+- **No FP32 models or heavy frameworks** — optimized for constrained hardware
 
-### Phase 1 (Current) — PyTorch-backed models via Python runtime
+### Integration path
 
-In the current phase, Triton compiles `.tri` source files to PyTorch `nn.Module` code. BUNNY workers that have Python available can load these directly:
+Triton (Python) compiles `.tri` source → PyTorch → ONNX export. BUNNY loads and runs the models in pure Rust:
 
-```python
-# triton_client.py (Python path, Phase 1)
-from triton_runtime import load_model
+- **Phase 1** ✅: ONNX runtime (`ort` crate) — load pre-trained ternary ONNX models, zero Python at runtime
+- **Phase 2** ✅: Native Rust ternary engine — 2-bit packed matmul, zero-skipping, fused batch-norm, `.bunny` binary format (~450 lines, 10 tests)
+- **Phase 3**: Port the `.tri` compiler to Rust — full Triton toolchain in Rust
 
-model = load_model("./triton-core/models/threat_classifier.triton")
-verdict = model.infer(packet_features)  # returns {"label": "malicious", "confidence": 0.94}
-```
-
-Every Triton model artifact ships with:
-- `model.pth` — packed 2-bit ternary weights
-- `model_metadata.json` — capabilities, op set, hardware target, accuracy, compression ratio
-- `README.md` — usage and performance notes
-
-### Phase 2 (Next) — Pure Rust / no-Python inference
-
-In Phase 2, Triton emits a self-contained `.triton` binary format. BUNNY's Rust workers load and execute this directly with no Python or PyTorch dependency:
+Phase 2 is implemented in `crates/agents/src/ternary_engine.rs` — a complete native Rust ternary inference engine with 2-bit packed weights, zero-skip matrix multiplication, fused batch normalization, and a compact `.bunny` binary model format.
 
 ```rust
-// Phase 2 target interface (triton-core Rust crate)
-use triton_core::runtime::TernaryRuntime;
+// Phase 2: Native Rust ternary inference (no ONNX, no Python)
+use bunny_agents::ternary_engine::{TernaryModelBuilder, Activation};
 
-let runtime = TernaryRuntime::load("./models/threat_classifier.triton")?;
-let verdict = runtime.infer(&packet_features)?;
-// returns TernaryVerdict { label: "malicious", confidence: 0.94 }
+let model = TernaryModelBuilder::new()
+    .add_layer(24, 32, Activation::ReLU)   // packet features → hidden
+    .add_layer(32, 6, Activation::None)     // hidden → threat categories
+    .build();
+let verdict = model.forward(&packet_features);
+// 2-bit packed weights, zero-skipping, pure Rust, no runtime deps
 ```
 
-The `.triton` binary format contains:
-1. JSON header: model name, op graph, input/output shapes, capabilities, hardware targets
-2. Binary weight block: 2-bit packed ternary weights (4 trits per byte)
-3. Metadata: version, compression ratio, accuracy, registered op set
+Target hardware:
+- 📱 Mobile (iOS / Android)
+- 📡 Routers &amp; gateways
+- 📺 Smart TVs
+- 🍓 Raspberry Pi &amp; embedded Linux
 
-**BUNNY action items for Phase 2:**
-- [ ] Add `triton-core` as a proper Cargo dependency (currently submodule only)
-- [ ] Implement `TernaryRuntime::load` and `infer` in `crates/core/src/triton.rs`
-- [ ] Wire each agent in `crates/agents/` to use `TernaryRuntime` instead of hardcoded prompts
-- [ ] Report inference latency + confidence in worker telemetry back to AI-PORTAL
+### Triton security models
+
+Triton provides 5 purpose-built ternary classifiers for BUNNY in [`models/security/`](https://github.com/financecommander/Triton/tree/main/models/security):
+
+| Model | BUNNY Agent | Purpose |
+|-------|-------------|---------|
+| `threat_classifier` | Threat Hunter | IOC correlation and threat categorization |
+| `packet_filter` | IoT Firewall | Edge DPI packet classification |
+| `malware_classifier` | Sandbox Agent | Payload detonation verdict |
+| `traffic_sentinel` | AI Guardian | API traffic monitoring |
+| `anomaly_detector` | Learning &amp; Adaptation | Novel threat detection |
+
+These models are compiled through Triton's DSL and exported as ONNX (Phase 1) or loaded via the native Rust ternary engine (Phase 2).
 
 ---
 
 ## Phase 2 Artifact Contract
 
-This is the **interface contract** between Triton (producer) and BUNNY (consumer). Triton owns the artifact format; BUNNY owns the loader and runtime binding.
+Interface contract between Triton (producer) and BUNNY (consumer). Triton owns the artifact format; BUNNY owns the loader and runtime binding.
 
 ### Artifact Directory Layout (per model)
 
@@ -199,18 +219,6 @@ models/
 }
 ```
 
-This telemetry drives AI-PORTAL dashboards, super-duper-spork routing updates, and ProbFlow uncertainty model refinement.
-
-### Specialist Models BUNNY Needs (ordered by priority)
-
-| Model | Task | Target Size | Priority |
-|---|---|---|---|
-| `threat_classifier` | Classify network events: benign / malicious / suspicious | < 5 MB | P0 — blocks agent wiring |
-| `packet_filter` | Edge DPI: allow / block / quarantine per packet class | < 5 MB | P0 — blocks IoT Firewall |
-| `malware_classifier` | Sandbox verdict: malicious / benign + confidence | < 10 MB | P1 |
-| `traffic_sentinel` | Monitor API calls: normal / exfiltration / injection | < 10 MB | P1 |
-| `anomaly_detector` | Time-series network anomaly detection | < 5 MB | P2 |
-
 ---
 
 ## Monetization Model
@@ -222,7 +230,7 @@ BUNNY uses a **unique per-IP licensing model** — code lives exclusively in thi
 | **Free** | $0 forever | First detected IP/device is always protected free |
 | **Pro** | $1/month per IP | Each additional IP the user selects via dashboard |
 
-Users choose which IPs to protect through the Flutter dashboard. Billing is handled via **Stripe** (subscriptions auto-created in `bunny-core` licensing module).
+Users choose which IPs to protect through the Flutter dashboard. Billing is handled via **Stripe** (subscriptions auto-created in `bunny-core` licensing module, feature-gated: `cargo build --features stripe`).
 
 ---
 
@@ -230,16 +238,16 @@ Users choose which IPs to protect through the Flutter dashboard. Billing is hand
 
 | Layer | Technology |
 |-------|------------|
-| **Core engine** | Rust 1.85+ (edition 2024) |
-| **AI inference** | Triton ternary DSL (2-bit quantized models) |
-| **Cross-platform UI** | Flutter 3.29+ via `flutter_rust_bridge` FFI |
+| **Core engine** | Rust 1.85+ (edition 2021) |
+| **AI inference** | Triton ternary (Phase 1: ONNX via `ort`, Phase 2: native Rust 2-bit engine) |
+| **Cross-platform UI** | Flutter 3.29+ with Rust ↔ Flutter FFI (C ABI bridge) |
 | **Database** | Turso (libSQL) — edge-replicated SQLite |
 | **Vector store** | LanceDB — local-first vector similarity |
 | **Sandbox** | Firecracker microVMs |
-| **Billing** | Stripe (subscriptions + webhooks) |
+| **Billing** | Stripe (subscriptions + webhooks, feature-gated) |
 | **Auth** | JWT (`jsonwebtoken` with AWS LC RS) |
 | **RPC** | gRPC via Tonic + Prost (protobuf) |
-| **Ecosystem link** | super-duper-spork (Swarm mainframe) |
+| **Ecosystem** | super-duper-spork (Swarm mainframe), Triton (model compiler) |
 
 ---
 
@@ -247,15 +255,15 @@ Users choose which IPs to protect through the Flutter dashboard. Billing is hand
 
 ### Prerequisites
 
-- Rust ≥ 1.85 (edition 2024)
+- Rust ≥ 1.85 (edition 2021)
 - Flutter ≥ 3.29
 - Firecracker (optional, for sandbox agent)
 
 ### Setup
 
 ```bash
-# Clone with Triton submodule
-git clone --recurse-submodules https://github.com/financecommander/BUNNY.git
+# Clone
+git clone https://github.com/financecommander/BUNNY.git
 cd BUNNY
 
 # Configure environment
@@ -264,6 +272,9 @@ cp .env.example .env
 
 # Build Rust workspace
 cargo build --release
+
+# Run tests (20 pass, zero warnings)
+cargo test -p bunny-agents --lib
 
 # Run Flutter dashboard
 cd flutter
@@ -287,57 +298,69 @@ flutter run
 
 ````text
 financecommander/
-├── BUNNY                  ← You are here (AI Machine Defender / Edge Worker Runtime)
-├── Triton                 ← Ternary neural network DSL + compiler + runtime (BUNNY's brain)
-├── super-duper-spork      ← Swarm mainframe (BUNNY protects + executes tasks from this)
-├── Orchestra              ← Workflow DSL (task graphs reference BUNNY workers as execution nodes)
-├── AI-PORTAL              ← Model registry, telemetry dashboards, lifecycle management
-└── ProbFlow               ← Uncertainty scoring + routing (uses BUNNY telemetry to improve routing)
+├── super-duper-spork      ← Control Plane: Swarm mainframe, 17 agent castes, task lifecycle
+│                            (BUNNY protects this — every outbound API call is audited)
+├── Triton                 ← Execution Plane: Ternary NN DSL + compiler + 9-model ladder
+│                            (compiles every BUNNY agent model, 5 security classifiers)
+├── BUNNY                  ← You are here: Execution Plane edge worker + agent builder
+│                            (Rust core, native ternary engine, 5 security agents, Flutter UI)
+├── Orchestra              ← Control Plane: Workflow DSL (.orc task graphs)
+├── ProbFlow               ← Adaptive Layer: Uncertainty scoring + routing
+└── AI-PORTAL              ← Interface: Model registry, eval dashboards, telemetry
 ````
+
+### Cross-repo data flow
+
+```
+Triton compiles .tri models ──► BUNNY loads them (ONNX or native .bunny format)
+super-duper-spork dispatches tasks ──► BUNNY agents execute on edge devices
+BUNNY telemetry ──► AI-PORTAL dashboards ──► ProbFlow routing updates
+Orchestra .orc blueprints ──► super-duper-spork schedules ──► BUNNY executes
+```
 
 ### Cross-Repo Responsibilities (from BUNNY's perspective)
 
 | Repo | What BUNNY provides | What BUNNY consumes |
 |---|---|---|
-| **Triton** | Hardware targets, edge constraints, latency/confidence telemetry | Compiled `.triton` model artifacts, op set definitions, `triton_runtime` |
-| **AI-PORTAL** | Per-inference telemetry (latency, confidence, worker ID, hardware) | Model registry lookups, capability profiles, deployment instructions |
-| **super-duper-spork** | Task execution results, worker availability, confidence scores | Task dispatch, model selection decisions, workflow task payloads |
-| **Orchestra** | Worker status, capability declarations | Workflow graph task assignments (BUNNY workers appear as execution nodes) |
-| **ProbFlow** | Confidence and latency streams per inference | Updated routing weights (which worker/model to use for which task type) |
+| **Triton** | Hardware targets, edge constraints, telemetry | Compiled model artifacts (ONNX + `.bunny` native format) |
+| **AI-PORTAL** | Per-inference telemetry (latency, confidence, worker ID) | Model registry lookups, deployment instructions |
+| **super-duper-spork** | Task execution results, worker availability | Task dispatch, model selection decisions |
+| **Orchestra** | Worker status, capability declarations | Workflow graph task assignments |
+| **ProbFlow** | Confidence and latency streams | Updated routing weights |
 
 ---
 
 ## Roadmap
 
 ### Completed
-- [x] Phase 6 — Cross-platform Flutter dashboard
 - [x] Rust workspace with core, agents, network, sandbox crates
-- [x] Licensing engine (first-IP-free + Stripe billing)
-- [x] Firecracker sandbox detonation
-- [x] Threat Hunter with live feed polling
+- [x] Turso DB integration (libSQL)
+- [x] LanceDB vector store integration
+- [x] gRPC codegen (tonic-prost-build)
+- [x] JWT authentication
+- [x] ONNX runtime integration (`ort` crate) for Triton pure agent inference (Phase 1)
+- [x] Phase 7 — Cross-platform Flutter dashboard (4 screens: Dashboard, Device Manager, Agent Status, Upgrade)
+- [x] Licensing engine — Stripe billing integration (feature-gated: `cargo build --features stripe`)
+- [x] Threat Hunter — live feed polling (Abuse.ch MalwareBazaar + AlienVault OTX + LanceDB correlation)
+- [x] Firecracker sandbox detonation (scaffold + threat feed integration)
+- [x] Unit tests (JWT, vector store, error handling, models)
+- [x] Native Rust ternary engine (Phase 2 — 2-bit packed matmul, zero-skipping, fused batch-norm, `.bunny` format)
+- [x] AI Guardian — 32-dim features, 6 threat categories, PII/injection detection, rate limiting
+- [x] IoT Firewall — 24-dim DPI features, C2/DNS tunnel/port scan detection, device profiling
+- [x] Learning &amp; Adaptation — federated learning, gradient accumulation, re-quantization
+- [x] Rust ↔ Flutter FFI (C ABI bridge)
 
-### Phase 2 — Triton Model Integration (active)
-- [ ] Define `.triton` binary artifact format (JSON header + packed weights) — **Triton side**
-- [ ] Implement `triton_runtime` NumPy/CPU inference engine — **Triton side**
-- [ ] Add `TernaryRuntime::load` + `infer` to `crates/core/src/triton.rs` — **BUNNY side**
-- [ ] Wire `threat_classifier` model into Threat Hunter agent — **BUNNY side**
-- [ ] Wire `packet_filter` model into IoT Firewall agent — **BUNNY side**
-- [ ] Implement per-inference telemetry reporting to AI-PORTAL — **BUNNY side**
-- [ ] Register BUNNY workers with super-duper-spork via gRPC capability declaration — **BUNNY side**
-- [ ] `model_metadata.json` schema validation on artifact load — **BUNNY side**
-
-### Phase 3 — Production Hardening
-- [ ] AI Guardian — super-duper-spork traffic monitoring with `traffic_sentinel` model
-- [ ] Learning & Adaptation — on-device federated retraining via Triton QAT hooks
-- [ ] Rust ↔ Flutter FFI via `flutter_rust_bridge`
+### In Progress
 - [ ] Production Stripe subscription flows
 - [ ] Multi-platform release (macOS, Windows, Linux, Android, iOS)
 
-### Phase 4 — Edge Scale
-- [ ] Full fleet deployment (Raspberry Pi, routers, smart TVs)
-- [ ] Worker fleet coordination via super-duper-spork
-- [ ] On-device model update pipeline (Triton → AI-PORTAL → BUNNY worker)
-- [ ] Federated learning across BUNNY worker fleet
+### Planned — Distributed Fleet
+- [ ] Worker registration and task dispatch protocol
+- [ ] gRPC/mTLS secure transport (protobuf codegen exists; server not wired)
+- [ ] Edge telemetry pipeline to AI-PORTAL
+- [ ] Worker self-validation and confidence reporting
+- [ ] Fleet health monitoring
+- [ ] Port `.tri` compiler to Rust (Phase 3)
 
 ---
 
@@ -355,27 +378,34 @@ Execution Plane       → Triton + BUNNY + distributed workers
 
 **Layer:** Execution Plane
 
-BUNNY is the **distributed worker runtime** in the Execution Plane.
+BUNNY is the **Rust agent builder and edge worker runtime** in the Execution Plane. It exclusively produces Triton pure agents.
 
-Responsibilities within the Shapeshifter architecture:
+**Implemented today:**
+- **Build and deploy Triton pure agents** — every agent runs 2-bit ternary inference
+- Native Rust ternary engine (Phase 2) — 2-bit packed matmul, zero-skipping, fused batch-norm
+- 5 security agents: Threat Hunter, AI Guardian, IoT Firewall, Sandbox, Learning &amp; Adaptation
+- ONNX model loading via `ort` crate (Phase 1)
+- Federated learning with gradient accumulation and re-quantization
+- Flutter cross-platform dashboard (4 screens)
+- Rust ↔ Flutter FFI bridge (C ABI)
 
-- secure task execution on Codespaces, containers, and edge devices
-- loading and running Triton-compiled ternary model artifacts
-- execution isolation (Firecracker microVM sandboxing)
-- edge inference deployment with CPU-first fallback
-- worker self-validation and per-inference confidence reporting
-- heartbeat and capability declaration to super-duper-spork
+**Planned (not yet implemented):**
+- Distributed worker registration and task dispatch
+- gRPC/mTLS secure transport
+- Edge telemetry pipeline
+- Worker self-validation and confidence reporting
+- Fleet health monitoring
 
 ### Repository Responsibility Matrix
 
 | Layer     | Component        | Repository          | Role                            |
 | --------- | ---------------- | ------------------- | ------------------------------- |
-| Adaptive  | Routing & Policy | `ProbFlow`          | uncertainty scoring and routing |
+| Adaptive  | Routing &amp; Policy | `ProbFlow`          | uncertainty scoring and routing |
 | Control   | Workflow DSL     | `Orchestra`         | task graph definition           |
 | Control   | Swarm Runtime    | `super-duper-spork` | scheduling, orchestration, live model routing (Phase 36) |
 | Execution | Model Runtime    | `Triton`            | AI inference and compression    |
-| Execution | Worker Runtime   | `BUNNY`             | distributed execution           |
-| Interface | UI & Telemetry   | `AI-PORTAL`         | monitoring and user interaction |
+| Execution | Worker Runtime   | `BUNNY`             | edge inference and security agents (native Rust ternary engine) |
+| Interface | UI &amp; Telemetry   | `AI-PORTAL`         | monitoring and user interaction |
 
 ### Execution Lifecycle
 
@@ -390,7 +420,7 @@ Task Input → Task Classification → Workflow Selection → Task Graph Compila
 Triton runtime metrics → AI-PORTAL dashboards → ProbFlow routing models → Shapeshifter policy updates
 ```
 
-### Goals & Roadmap
+### Goals &amp; Roadmap
 
 See the [Orchestra README](https://github.com/financecommander/Orchestra#architecture-overview-shapeshifter-orchestration-model) for the full architecture specification, goals, and 7-phase roadmap.
 
@@ -400,9 +430,9 @@ See the [Orchestra README](https://github.com/financecommander/Orchestra#archite
 
 The Shapeshifter architecture competes with frontier LLM systems on **system-level capability**, not single-model capability.
 
-**BUNNY role:** Execution Plane — Distributed Worker Runtime
+**BUNNY role:** Execution Plane — Triton Agent Builder &amp; Worker Runtime
 
-BUNNY's distributed worker architecture is the foundation of the parallel execution advantage. Edge inference, secure task execution, and worker telemetry enable the system to run many specialist models simultaneously — the core mechanism that outperforms sequential frontier reasoning.
+BUNNY builds and runs Triton pure agents — every specialist model is a ternary agent. Edge inference, secure task execution, and worker telemetry enable the system to run many Triton agents simultaneously — the core mechanism that outperforms sequential frontier reasoning.
 
 ### System Benchmark Matrix
 
@@ -454,101 +484,3 @@ See the [Orchestra README](https://github.com/financecommander/Orchestra#competi
   <strong>🐰 BUNNY sees everything. BUNNY protects everything.</strong><br/>
   <em>Powered by Triton ternary AI · Guarding the super-duper-spork Swarm</em>
 </p>
-
----
-
-## Architecture Design Document — Rust Implementation
-
-> **STATUS: APPROVED**
-> **SUBJECT: BUNNY RUST AGENT ARCHITECTURE AND SANDBOX DESIGN**
-> **ROLE: SYSTEM ANALYSIS & ARCHITECTURE BLUEPRINT**
-
-The transition of the `BUNNY` edge worker to Rust requires a strict focus on memory safety, deterministic performance, and absolute isolation for untrusted, AI-generated subtasks. This document serves as the structural and integration analysis blueprint, perfectly primed to be handed off for primary and critical code generation.
-
----
-
-### 1. System Objectives
-
-The `BUNNY` agent is the decentralized execution engine of the swarm. Its primary mandate is to receive highly decomposed tasks from the `super-duper-spork` scheduler, execute compiled Triton kernels or hybrid Python/Mojo scripts in a secure sandbox, and stream deterministic telemetry back to the control plane.
-
----
-
-### 2. Core Subsystems
-
-#### A. Asynchronous Communication Layer (Tokio + Tonic)
-
-- **Protocol:** gRPC over mTLS (Mutual TLS)
-- **Mechanism:** `BUNNY` initiates a persistent bidirectional stream to `super-duper-spork`. This bypasses edge-firewall ingress issues, as the worker only makes outbound connections.
-- **Data Flow:**
-  - **Upstream:** Hardware capability registration, continuous heartbeat (load, thermal, memory metrics), and execution verdicts
-  - **Downstream:** Task payloads (Wasm binaries, Triton kernels, or execution graphs) and priority interrupts
-
-#### B. Secure Execution Sandbox (Isolation)
-
-Model-generated code is inherently untrusted. `BUNNY` must isolate the execution plane from the host OS.
-
-**Tier 1: WebAssembly (Wasmtime) — Logic Tasks**
-
-For tasks involving parsing, retrieval adapters, or data transformation (e.g., `calculus-tools` operations), payloads are compiled to `wasm32-wasi`.
-
-- Sub-millisecond startup times
-- Strictly bounded memory
-- Capability-based security — no network or filesystem access unless explicitly granted
-
-**Tier 2: MicroVMs (Firecracker) — GPU/Kernel Tasks**
-
-For hardware-accelerated tasks (Triton GPU kernels), Wasm is insufficient. `BUNNY` spawns lightweight microVMs.
-
-- Hardware-level virtualization (KVM) with a tiny footprint
-- Direct GPU passthrough for auto-tuning ternary matrix multiplication safely
-- Full isolation from host OS
-
-#### C. Telemetry and State Management (Tracing)
-
-- **Instrumentation:** `tracing` and `metrics` crates
-- **Confidence Scoring:** Execution state and hardware profiling are continuously monitored. If a task violates memory limits or timeouts, `BUNNY` kills the sandbox and returns a fatal `ExecutionVerdict` to the validation pipeline.
-
----
-
-### 3. Cross-Compilation Matrix
-
-Rust's LLVM backend allows a single `BUNNY` codebase to target the entire decentralized swarm infrastructure.
-
-| Target Triple | Deployment Hardware | Use Case | Linkage |
-|---|---|---|---|
-| `x86_64-unknown-linux-musl` | Cloud VMs, heavy edge nodes | Primary GPU target for Triton kernel execution | Static |
-| `aarch64-unknown-linux-musl` | Raspberry Pi 4/5, routers | Parsing, task routing, low-cost CPU fallback | Static |
-| `x86_64-apple-darwin` | Mac Mini M-Series farm | iOS/macOS integration, Metal backend compilation | Dynamic |
-| `wasm32-wasi` | Browsers, serverless functions | Absolute lowest-latency data transformation | N/A |
-
-> The `musl` targets ensure zero dependency on the host's `glibc` version, making `BUNNY` a true drop-in binary on any Linux environment.
-
----
-
-### 4. Ecosystem Integration Flow
-
-| # | Subsystem | Integration |
-|---|---|---|
-| 1 | **Distributed Task Scheduler** | `super-duper-spork` reads `BUNNY`'s capability manifest (GPU model, VRAM, CPU, memory) upon connection to route exact-match tasks |
-| 2 | **Task Decomposition Engine** | `Orchestra` ensures subtasks are small enough to run within `BUNNY`'s strict microVM timeout windows |
-| 3 | **Execution Validation Pipeline** | `BUNNY` returns a structured `ExecutionVerdict` (status, logs, hardware cost, confidence score) ready for merge arbitration |
-| 4 | **Model Runtime** | `Triton` provides compiled `.triton` artifacts; `BUNNY` loads and executes them via `TernaryRuntime` |
-| 5 | **Telemetry & Registry** | `AI-PORTAL` receives per-inference telemetry from every `BUNNY` worker to drive routing and model improvement |
-
----
-
-### 5. `ExecutionVerdict` Struct
-
-```rust
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ExecutionVerdict {
-    pub task_id: Uuid,
-    pub status: VerdictStatus,       // Success | Timeout | MemoryViolation | Fatal
-    pub stdout: String,
-    pub stderr: String,
-    pub hardware_cost: HardwareCost, // { cpu_ms, gpu_ms, memory_peak_mb }
-    pub confidence: f32,             // from Triton model inference
-    pub sandbox_tier: SandboxTier,   // Wasm | MicroVM
-    pub duration_ms: u64,
-}
-```
