@@ -66,6 +66,7 @@ pub struct TernaryHeader {
 }
 
 /// A ternary packet: header + data, ready for encryption.
+#[derive(Debug)]
 pub struct TernaryPacket {
     pub header: TernaryHeader,
     pub data: Vec<u8>,
