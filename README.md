@@ -70,52 +70,79 @@ BUNNY is the **on-device/edge security layer** of the financecommander ecosystem
 
 ````text
 BUNNY/
-├── Cargo.toml                 # Rust workspace root (5 crates)
+├── Cargo.toml                 # Rust workspace root (8 crates)
 ├── .env.example               # Environment variables template
 ├── crates/
-│   ├── core/                  # bunny-core: licensing, DB, vectors, gRPC, auth
-│   │   ├── src/
-│   │   │   ├── lib.rs
-│   │   │   ├── licensing.rs   # First-IP-free + $1/mo per extra IP (Stripe)
-│   │   │   ├── vector.rs      # LanceDB threat vector store + similarity search
-│   │   │   ├── jwt.rs         # JWT token creation/verification
-│   │   │   ├── models.rs      # Data models (User, Device, Threat, NetworkEvent)
-│   │   │   └── error.rs       # BunnyError enum
-│   │   └── build.rs           # Protobuf / gRPC codegen (tonic-prost-build)
-│   ├── agents/                # bunny-agents: all 5 security agent personas
+│   ├── crypto/                # bunny-crypto: encrypted swarm communications (109 tests)
 │   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── triton_agent.rs    # TritonAgent: ONNX model loading + inference (ort)
-│   │       ├── ternary_engine.rs  # Phase 2 native Rust ternary engine (2-bit packed matmul)
-│   │       ├── guardian.rs        # AI Guardian: traffic monitoring, PII/injection detection
-│   │       ├── swarm.rs           # Agent swarm coordination
-│   │       ├── learning.rs        # On-device federated retraining
-│   │       └── prompts.rs         # Agent prompt templates
-│   ├── network/               # bunny-network: packet capture, DPI, firewall rules
+│   │       ├── cipher.rs          # AES-256-GCM / ChaCha20-Poly1305 (auto-detect AES-NI)
+│   │       ├── key_exchange.rs    # Hybrid PQ key exchange (X25519 + ML-KEM-768)
+│   │       ├── hybrid_sign.rs     # Ed25519 + ML-DSA-65 dual signatures (FIPS 204)
+│   │       ├── transport.rs       # Authenticated node-to-node transport + session expiry
+│   │       ├── session.rs         # Session store + 128-bit sliding window replay protection
+│   │       ├── envelope.rs        # SwarmEnvelope — 62-byte AAD-bound wire format
+│   │       ├── cloaked.rs         # CloakedTransport — metadata minimization, cover traffic
+│   │       ├── identity.rs        # Node identity (Ed25519 + ML-KEM-768 keypairs)
+│   │       ├── execution.rs       # Decrypt-at-boundary for Triton inference
+│   │       ├── gateway.rs         # Inference gateway — decrypt/re-encrypt
+│   │       ├── artifact.rs        # Signed artifact manifest chain
+│   │       ├── swarm.rs           # 16 typed encrypted messages + role enforcement
+│   │       ├── ternary.rs         # TernaryPacket — 7 payload types
+│   │       └── kdf.rs             # HKDF-SHA256 key derivation
+│   ├── triton/                # bunny-triton: ternary neural inference engine (44 tests)
 │   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── inspector.rs       # eBPF deep packet inspection (aya)
-│   │       └── iot_firewall.rs    # IoT edge DPI: C2, DNS tunnel, port scan detection
-│   ├── sandbox/               # bunny-sandbox: Firecracker microVM detonation
+│   │       ├── engine.rs          # Inference engine — forward pass + argmax prediction
+│   │       ├── model.rs           # Model builder — layer chain validation
+│   │       ├── layer.rs           # 2-bit packed matmul, zero-skipping, fused batch-norm
+│   │       ├── packing.rs         # Ternary weight packing (16 values per u32)
+│   │       ├── activation.rs      # ReLU, Sigmoid, Softmax, None
+│   │       ├── bunny_format.rs    # .bunny binary model format (CRC32 + mmap)
+│   │       ├── shard.rs           # Model shard split/merge for distributed inference
+│   │       └── safetensors_loader.rs  # SafeTensors → ternary conversion
+│   ├── network/               # bunny-network: QUIC transport + orchestration (37 tests)
 │   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── firecracker.rs     # MicroVM payload detonation
-│   │       └── threat_hunter.rs   # Live feed polling (Abuse.ch + OTX)
-│   └── ffi/                   # bunny-ffi: Rust ↔ Flutter C ABI bridge
+│   │       ├── server.rs          # QUIC server — accept connections, dispatch messages
+│   │       ├── client.rs          # QUIC client — connect, handshake, send
+│   │       ├── connection.rs      # Handshake initiator/responder over QUIC streams
+│   │       ├── framing.rs         # Length-prefixed frame protocol (8 frame types)
+│   │       ├── peer.rs            # PeerManager — DashMap concurrent peer tracking
+│   │       ├── tls.rs             # Self-signed TLS (app-layer auth via bunny-crypto)
+│   │       ├── config.rs          # NetworkConfig (bind addr, timeouts, limits)
+│   │       └── orchestration/     # Distributed scheduling
+│   │           ├── health.rs      # Health check heartbeat monitor
+│   │           ├── scheduler.rs   # Priority queue task scheduler
+│   │           └── worker_pool.rs # Worker pool with capability matching
+│   ├── calculus/              # bunny-calculus: math primitives (45 tests)
+│   │   └── src/
+│   │       ├── gradient.rs        # STE, gradient clipping, alignment
+│   │       ├── similarity.rs      # Cosine, Jaccard, kNN search
+│   │       ├── statistics.rs      # Running stats, EMA, z-score, IQR outliers
+│   │       ├── optimizer.rs       # Threshold search, entropy, balance analysis
+│   │       ├── symbolic.rs        # Symbolic expression evaluator
+│   │       └── tensor_ops.rs      # Dot product, L1 norm, sparsity, saturating ops
+│   ├── portal/                # bunny-portal: HTTP API gateway (23 tests)
+│   │   └── src/
+│   │       ├── api.rs             # Axum router — inference, model CRUD, health
+│   │       ├── router.rs          # Model routing + input validation
+│   │       ├── model_registry.rs  # Worker-to-model assignment + VRAM estimation
+│   │       ├── session_manager.rs # Session lifecycle + expiry eviction
+│   │       └── telemetry.rs       # Prometheus-style counters, gauges, latency
+│   ├── agents/                # bunny-agents: agent trait + runner (10 tests)
+│   │   └── src/
+│   │       ├── agent.rs           # Agent trait, AgentScale, ModelScale classification
+│   │       ├── runner.rs          # Agent dispatch, register/unregister, inference
+│   │       └── config.rs          # Agent configuration (model paths, thresholds)
+│   ├── core/                  # bunny-core: protobuf, DB, vectors, licensing
+│   │   └── src/
+│   │       ├── licensing.rs       # First-IP-free + $1/mo per extra IP (Stripe)
+│   │       ├── proto.rs           # gRPC protobuf codegen (tonic-prost-build)
+│   │       ├── db.rs              # Database stubs
+│   │       └── vector.rs          # Vector store interface
+│   └── sandbox/               # bunny-sandbox: Firecracker detonation
 │       └── src/
-│           └── lib.rs             # model_create, model_infer, guardian_inspect, trainer ops
-├── flutter/
-│   ├── pubspec.yaml           # Flutter app (v1.0.0+1)
-│   └── lib/
-│       ├── main.dart          # App state management + routing
-│       ├── ffi/
-│       │   └── bunny_ffi.dart     # Dart FFI bindings to Rust C ABI
-│       ├── screens/
-│       │   ├── dashboard_screen.dart      # Summary cards, agent fleet overview
-│       │   ├── device_manager_screen.dart  # Toggle device protection, pricing
-│       │   ├── agent_status_screen.dart    # Agent fleet status indicators
-│       │   └── upgrade_screen.dart         # Free vs Pro tier, checkout flow
-│       └── widgets/
+│           ├── firecracker.rs     # MicroVM payload detonation
+│           └── threat_hunter.rs   # Live feed polling (Abuse.ch + OTX)
+├── flutter/                   # Cross-platform UI (4 screens)
 └── README.md
 ````
 
@@ -519,8 +546,8 @@ cp .env.example .env
 # Build Rust workspace
 cargo build --release
 
-# Run tests (20 pass, zero warnings)
-cargo test -p bunny-agents --lib
+# Run all tests (268 pass across 8 crates)
+cargo test
 
 # Run Flutter dashboard
 cd flutter
@@ -579,33 +606,28 @@ Orchestra .orc blueprints ──► super-duper-spork schedules ──► BUNNY 
 ## Roadmap
 
 ### Completed
-- [x] Rust workspace with core, agents, network, sandbox crates
-- [x] Turso DB integration (libSQL)
-- [x] LanceDB vector store integration
-- [x] gRPC codegen (tonic-prost-build)
-- [x] JWT authentication
-- [x] ONNX runtime integration (`ort` crate) for Triton pure agent inference (Phase 1)
-- [x] Phase 7 — Cross-platform Flutter dashboard (4 screens: Dashboard, Device Manager, Agent Status, Upgrade)
-- [x] Licensing engine — Stripe billing integration (feature-gated: `cargo build --features stripe`)
-- [x] Threat Hunter — live feed polling (Abuse.ch MalwareBazaar + AlienVault OTX + LanceDB correlation)
-- [x] Firecracker sandbox detonation (scaffold + threat feed integration)
-- [x] Unit tests (JWT, vector store, error handling, models)
-- [x] Native Rust ternary engine (Phase 2 — 2-bit packed matmul, zero-skipping, fused batch-norm, `.bunny` format)
-- [x] AI Guardian — 32-dim features, 6 threat categories, PII/injection detection, rate limiting
-- [x] IoT Firewall — 24-dim DPI features, C2/DNS tunnel/port scan detection, device profiling
-- [x] Learning &amp; Adaptation — federated learning, gradient accumulation, re-quantization
-- [x] Rust ↔ Flutter FFI (C ABI bridge)
+- [x] Rust workspace with 8 crates (crypto, triton, network, calculus, portal, agents, core, sandbox)
+- [x] **Encrypted swarm comms** — hybrid PQ key exchange (X25519 + ML-KEM-768), dual cipher (AES-256-GCM / ChaCha20-Poly1305), 128-bit sliding window replay protection
+- [x] **Security hardening** — IKM zeroization, ZeroizeOnDrop signing keys, session expiry, envelope age anti-delay, forward-secure rekey, traffic policy jitter, peer role auth
+- [x] **QUIC transport** — quinn server/client, framing protocol, peer management, distributed orchestration (health, scheduler, worker pool)
+- [x] **Ternary inference engine** — 2-bit packed matmul, zero-skipping, fused batch-norm, shard split/merge, safetensors loader, `.bunny` format
+- [x] **Math primitives** — gradient ops, cosine/Jaccard similarity, statistics (EMA, z-score, IQR), symbolic evaluator, tensor ops
+- [x] **HTTP API gateway** — Axum router, model registry, session manager, Prometheus telemetry
+- [x] **Agent framework** — trait-based agents, runner dispatch, config, scale classification
+- [x] Turso DB + LanceDB vector store + gRPC codegen + JWT auth
+- [x] Security agents — Threat Hunter, AI Guardian, Sandbox, IoT Firewall, Learning &amp; Adaptation
+- [x] Flutter dashboard (4 screens) + Rust ↔ Flutter FFI (C ABI bridge)
+- [x] Stripe billing (feature-gated) + Firecracker sandbox
+- [x] **268 tests** across all 8 crates (crypto: 109, triton: 44, calculus: 45, network: 37, portal: 23, agents: 10)
 
 ### In Progress
 - [ ] Production Stripe subscription flows
 - [ ] Multi-platform release (macOS, Windows, Linux, Android, iOS)
 
-### Planned — Distributed Fleet
-- [ ] Worker registration and task dispatch protocol
-- [ ] gRPC/mTLS secure transport (protobuf codegen exists; server not wired)
+### Planned
+- [ ] Bilateral rekey protocol (RekeyRequest/RekeyAccept message pair)
+- [ ] Cover traffic background task wired into transport layer
 - [ ] Edge telemetry pipeline to AI-PORTAL
-- [ ] Worker self-validation and confidence reporting
-- [ ] Fleet health monitoring
 - [ ] Port `.tri` compiler to Rust (Phase 3)
 
 ---
