@@ -1,4 +1,5 @@
-use tracing::info;
+use tracing::{info, warn};
+use zeroize::Zeroize;
 
 use crate::cipher::{CipherSuite, SwarmCipher};
 use crate::cloaked::{CloakedEnvelope, CloakedPayload, OpaqueRouteTag, TrafficPolicy};
@@ -8,6 +9,9 @@ use crate::identity::{NodeIdentity, SignedAnnouncement, SwarmNode};
 use crate::kdf::derive_session_key;
 use crate::session::{SessionStore, SwarmSession};
 use crate::types::SessionId;
+
+/// Maximum age of an envelope timestamp before rejection (5 minutes).
+const MAX_ENVELOPE_AGE_MS: u64 = 5 * 60 * 1000;
 
 /// Handshake initiation message sent from initiator to responder.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -133,6 +137,9 @@ impl NodeTransport {
         ikm.extend_from_slice(shared_pq.as_ref());
         let session_key = derive_session_key(&ikm, b"bunny-node-session")?;
 
+        // Securely wipe IKM — it contains raw shared secrets
+        ikm.zeroize();
+
         // 7. Create session
         let session_id = SessionId::new();
         let agreed_suite = init.preferred_suite;
@@ -149,6 +156,8 @@ impl NodeTransport {
             last_activity: now,
             send_sequence: 0,
             recv_sequence: 0,
+            recv_bitmap: 0,
+            recv_initialized: false,
         };
         self.sessions.insert(session).await;
 
@@ -209,6 +218,9 @@ impl NodeTransport {
         ikm.extend_from_slice(shared_pq.as_ref());
         let session_key = derive_session_key(&ikm, b"bunny-node-session")?;
 
+        // Securely wipe IKM — it contains raw shared secrets
+        ikm.zeroize();
+
         // 6. Create session
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -223,6 +235,8 @@ impl NodeTransport {
             last_activity: now,
             send_sequence: 0,
             recv_sequence: 0,
+            recv_bitmap: 0,
+            recv_initialized: false,
         };
         self.sessions.insert(session).await;
 
@@ -236,15 +250,37 @@ impl NodeTransport {
     }
 
     /// Send an encrypted message to a peer on an established session.
+    ///
+    /// Checks session expiry before sending. Applies traffic policy jitter
+    /// if enabled to resist timing analysis.
     pub async fn send(
         &self,
         session_id: &SessionId,
         payload: &[u8],
     ) -> Result<SwarmEnvelope> {
+        // Apply traffic policy jitter before sealing (timing resistance)
+        if self.traffic_policy.jitter_enabled && self.traffic_policy.jitter_range_ms.1 > 0 {
+            let (min_ms, max_ms) = self.traffic_policy.jitter_range_ms;
+            let jitter = {
+                use rand::Rng;
+                rand::rngs::OsRng.gen_range(min_ms..=max_ms)
+            };
+            tokio::time::sleep(std::time::Duration::from_millis(jitter)).await;
+        }
+
+        let max_age = self.sessions.max_session_age_ms;
         let agent_id = self.node.agent_id().clone();
         let result = self
             .sessions
-            .get_mut(session_id, |session| session.seal(&agent_id, payload))
+            .get_mut(session_id, |session| {
+                // Check session expiry before sending
+                if session.is_expired(max_age) {
+                    return Err(CryptoError::InvalidEnvelope(
+                        "session expired — rekey or re-handshake required".into(),
+                    ));
+                }
+                session.seal(&agent_id, payload)
+            })
             .await;
 
         match result {
@@ -255,13 +291,49 @@ impl NodeTransport {
     }
 
     /// Receive and decrypt an envelope from a peer.
+    ///
+    /// Checks session expiry and envelope timestamp age before decrypting.
     pub async fn receive(
         &self,
         envelope: &SwarmEnvelope,
     ) -> Result<Vec<u8>> {
+        // Check envelope timestamp age (anti-delay attack)
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        if envelope.timestamp_ms > 0 {
+            let age = now_ms.saturating_sub(envelope.timestamp_ms);
+            if age > MAX_ENVELOPE_AGE_MS {
+                warn!(
+                    age_ms = age,
+                    max = MAX_ENVELOPE_AGE_MS,
+                    "rejecting stale envelope"
+                );
+                return Err(CryptoError::InvalidEnvelope(
+                    "envelope too old — possible delay attack".into(),
+                ));
+            }
+            // Also reject envelopes from the future (clock skew tolerance: 30s)
+            if envelope.timestamp_ms > now_ms + 30_000 {
+                return Err(CryptoError::InvalidEnvelope(
+                    "envelope timestamp in the future".into(),
+                ));
+            }
+        }
+
+        let max_age = self.sessions.max_session_age_ms;
         let result = self
             .sessions
-            .get_mut(&envelope.session_id, |session| session.open(envelope))
+            .get_mut(&envelope.session_id, |session| {
+                // Check session expiry
+                if session.is_expired(max_age) {
+                    return Err(CryptoError::InvalidEnvelope(
+                        "session expired — rekey or re-handshake required".into(),
+                    ));
+                }
+                session.open(envelope)
+            })
             .await;
 
         match result {
@@ -271,37 +343,63 @@ impl NodeTransport {
         }
     }
 
-    /// Rekey an existing session (generate new session key, keep session ID).
+    /// Rekey an existing session using forward-secure key evolution.
+    ///
+    /// Derives the new session key from the existing key + fresh randomness
+    /// via HKDF. This ensures forward secrecy: compromising the new key does
+    /// not reveal the old key.
+    ///
+    /// **Important:** This is a LOCAL rekey — both sides must rekey in
+    /// coordination (e.g., after exchanging a RekeyRequest/RekeyAccept
+    /// message pair). Sequences are NOT reset to prevent replay attacks
+    /// across rekey boundaries.
     pub async fn rekey(&self, session_id: &SessionId) -> Result<()> {
-        // Generate fresh key material
-        let new_key = crate::types::SymmetricKey::from_bytes({
-            let mut buf = [0u8; 32];
+        // Generate fresh entropy for key evolution
+        let mut fresh_entropy = [0u8; 32];
+        {
             use rand::RngCore;
-            rand::rngs::OsRng.fill_bytes(&mut buf);
-            buf
-        });
+            rand::rngs::OsRng.fill_bytes(&mut fresh_entropy);
+        }
 
         let result = self
             .sessions
             .get_mut(session_id, |session| {
                 let suite = session.cipher.suite();
-                session.cipher = SwarmCipher::with_suite(&new_key, suite);
-                session.send_sequence = 0;
-                session.recv_sequence = 0;
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64;
-                session.created_at = now;
-                session.last_activity = now;
+
+                // Derive new key from existing key + fresh randomness via HKDF
+                // This provides forward secrecy: old key cannot be recovered
+                let mut ikm = Vec::with_capacity(64);
+                ikm.extend_from_slice(session.cipher.key_material());
+                ikm.extend_from_slice(&fresh_entropy);
+
+                match derive_session_key(&ikm, b"bunny-rekey-evolution") {
+                    Ok(new_key) => {
+                        // Zeroize IKM containing old key material
+                        ikm.zeroize();
+                        session.cipher = SwarmCipher::with_suite(&new_key, suite);
+                        // Do NOT reset sequences — prevents cross-rekey replays
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64;
+                        session.created_at = now; // Reset session age for expiry
+                        session.last_activity = now;
+                        Ok(())
+                    }
+                    Err(e) => {
+                        ikm.zeroize();
+                        Err(e)
+                    }
+                }
             })
             .await;
 
         match result {
-            Some(()) => {
-                info!(session = ?session_id, "session rekeyed");
+            Some(Ok(())) => {
+                info!(session = ?session_id, "session rekeyed (forward-secure evolution)");
                 Ok(())
             }
+            Some(Err(e)) => Err(e),
             None => Err(CryptoError::SessionNotFound(session_id.clone())),
         }
     }
@@ -311,16 +409,35 @@ impl NodeTransport {
     /// The cloaked envelope hides sender identity, cipher suite, version,
     /// and timestamp inside the encrypted payload. Only session_id, sequence,
     /// nonce, and an opaque route tag are visible in the plaintext header.
+    ///
+    /// Applies traffic policy jitter if enabled.
     pub async fn send_cloaked(
         &self,
         session_id: &SessionId,
         route_tag: OpaqueRouteTag,
         payload: &[u8],
     ) -> Result<CloakedEnvelope> {
+        // Apply traffic policy jitter before sealing (timing resistance)
+        if self.traffic_policy.jitter_enabled && self.traffic_policy.jitter_range_ms.1 > 0 {
+            let (min_ms, max_ms) = self.traffic_policy.jitter_range_ms;
+            let jitter = {
+                use rand::Rng;
+                rand::rngs::OsRng.gen_range(min_ms..=max_ms)
+            };
+            tokio::time::sleep(std::time::Duration::from_millis(jitter)).await;
+        }
+
+        let max_age = self.sessions.max_session_age_ms;
         let agent_id = self.node.agent_id().clone();
         let result = self
             .sessions
             .get_mut(session_id, |session| {
+                // Check session expiry before sending
+                if session.is_expired(max_age) {
+                    return Err(CryptoError::InvalidEnvelope(
+                        "session expired — rekey or re-handshake required".into(),
+                    ));
+                }
                 session.seal_cloaked(&agent_id, route_tag, payload)
             })
             .await;
@@ -507,7 +624,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rekey_resets_sequences() {
+    async fn rekey_preserves_sequences() {
         let node_a = NodeTransport::new(
             SwarmNode::generate(NodeRole::Worker, test_caps()),
         );
@@ -523,11 +640,11 @@ mod tests {
         node_a.send(&session_id, b"msg1").await.unwrap();
         node_a.send(&session_id, b"msg2").await.unwrap();
 
-        // Rekey
+        // Rekey (forward-secure key evolution)
         node_a.rekey(&session_id).await.unwrap();
 
-        // Can still send after rekey (sequences reset)
+        // Sequences continue (not reset) to prevent cross-rekey replays
         let env = node_a.send(&session_id, b"post-rekey").await.unwrap();
-        assert_eq!(env.sequence, 0);
+        assert_eq!(env.sequence, 2); // Continues from where we left off
     }
 }

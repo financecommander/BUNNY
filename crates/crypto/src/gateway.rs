@@ -163,6 +163,8 @@ impl InferenceGateway {
             last_activity: now,
             send_sequence: 0,
             recv_sequence: 0,
+            recv_bitmap: 0,
+            recv_initialized: false,
         };
 
         self.session_store.insert(session).await;
@@ -204,6 +206,8 @@ mod tests {
             last_activity: now,
             send_sequence: 0,
             recv_sequence: 0,
+            recv_bitmap: 0,
+            recv_initialized: false,
         };
 
         store.insert(session).await;

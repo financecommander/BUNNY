@@ -67,6 +67,9 @@ enum CipherInner {
 pub struct SwarmCipher {
     inner: CipherInner,
     suite: CipherSuite,
+    /// Retained copy of the symmetric key for two purposes:
+    /// 1. Secure zeroization on Drop (inner cipher types don't impl Zeroize)
+    /// 2. Key evolution during forward-secure rekey (HKDF from old key + entropy)
     key_copy: [u8; 32],
 }
 
@@ -98,6 +101,13 @@ impl SwarmCipher {
     /// Which cipher suite is active.
     pub fn suite(&self) -> CipherSuite {
         self.suite
+    }
+
+    /// Access raw key material for key evolution (rekey derivation).
+    /// The returned slice MUST NOT be logged or persisted — it is the live
+    /// session key. Callers should zeroize any copies after use.
+    pub(crate) fn key_material(&self) -> &[u8; 32] {
+        &self.key_copy
     }
 
     /// Encrypt plaintext with associated data. Returns ciphertext with appended tag.

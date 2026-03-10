@@ -173,6 +173,14 @@ impl HybridSigningKey {
     }
 }
 
+// Security note: With the "zeroize" feature enabled on ed25519-dalek,
+// `SigningKey` implements `ZeroizeOnDrop` — the secret scalar is automatically
+// scrubbed when this struct is dropped. No manual Drop impl needed for Ed25519.
+//
+// ML-DSA keypair does not yet implement ZeroizeOnDrop; the memory will be
+// zeroed when the OS reclaims the page. This is a known limitation until
+// the ml-dsa crate adds zeroize support.
+
 impl HybridVerifyingKey {
     /// Verify a hybrid signature.
     ///

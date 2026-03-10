@@ -8,6 +8,10 @@ use crate::envelope::SwarmEnvelope;
 use crate::error::{CryptoError, Result};
 use crate::types::{AgentId, SessionId};
 
+/// Sliding window size for replay protection (in sequence numbers).
+/// Must be ≤ 128 since we use a u128 bitmap.
+const REPLAY_WINDOW_SIZE: u64 = 128;
+
 /// An established encrypted session between two agents.
 pub struct SwarmSession {
     pub session_id: SessionId,
@@ -16,7 +20,14 @@ pub struct SwarmSession {
     pub created_at: u64,
     pub last_activity: u64,
     pub send_sequence: u64,
+    /// High-water mark: the highest sequence number received so far.
     pub recv_sequence: u64,
+    /// Bitmap tracking which of the last REPLAY_WINDOW_SIZE sequences
+    /// before recv_sequence have been seen. Bit 0 = recv_sequence itself,
+    /// bit 1 = recv_sequence - 1, etc.
+    pub(crate) recv_bitmap: u128,
+    /// Whether we have received at least one message.
+    pub(crate) recv_initialized: bool,
 }
 
 impl SwarmSession {
@@ -41,26 +52,61 @@ impl SwarmSession {
         CloakedEnvelope::seal(&self.cipher, sender, &self.session_id, seq, route_tag, payload)
     }
 
+    /// Sliding-window replay check. Returns Ok(()) if the sequence is fresh,
+    /// or Err if it is a replay or too old.
+    fn check_and_record_sequence(&mut self, seq: u64) -> Result<()> {
+        if !self.recv_initialized {
+            // First message ever — accept it, initialize the window.
+            self.recv_sequence = seq;
+            self.recv_bitmap = 1; // bit 0 marks this sequence as seen
+            self.recv_initialized = true;
+            return Ok(());
+        }
+
+        if seq > self.recv_sequence {
+            // Advance the window: shift bitmap by the gap
+            let gap = seq - self.recv_sequence;
+            if gap >= REPLAY_WINDOW_SIZE {
+                // Everything in the old window is too old; reset bitmap.
+                self.recv_bitmap = 1;
+            } else {
+                self.recv_bitmap <<= gap;
+                self.recv_bitmap |= 1; // mark new high-water as seen
+            }
+            self.recv_sequence = seq;
+            Ok(())
+        } else {
+            // seq <= recv_sequence — check if within the window
+            let age = self.recv_sequence - seq;
+            if age >= REPLAY_WINDOW_SIZE {
+                return Err(CryptoError::InvalidEnvelope(
+                    "replay detected: sequence too old for window".into(),
+                ));
+            }
+            let bit = 1u128 << age;
+            if self.recv_bitmap & bit != 0 {
+                return Err(CryptoError::InvalidEnvelope("replay detected".into()));
+            }
+            // Mark as seen
+            self.recv_bitmap |= bit;
+            Ok(())
+        }
+    }
+
     /// Decrypt a cloaked envelope from this session's peer.
     pub fn open_cloaked(&mut self, envelope: &CloakedEnvelope) -> Result<CloakedPayload> {
-        // Replay protection
-        if envelope.header.sequence <= self.recv_sequence && self.recv_sequence > 0 {
-            return Err(CryptoError::InvalidEnvelope("replay detected".into()));
-        }
+        // Sliding-window replay protection
+        self.check_and_record_sequence(envelope.header.sequence)?;
         let payload = envelope.open(&self.cipher)?;
-        self.recv_sequence = envelope.header.sequence;
         self.update_activity();
         Ok(payload)
     }
 
     /// Decrypt an envelope from this session's peer.
     pub fn open(&mut self, envelope: &SwarmEnvelope) -> Result<Vec<u8>> {
-        // Replay protection
-        if envelope.sequence <= self.recv_sequence && self.recv_sequence > 0 {
-            return Err(CryptoError::InvalidEnvelope("replay detected".into()));
-        }
+        // Sliding-window replay protection
+        self.check_and_record_sequence(envelope.sequence)?;
         let plaintext = envelope.open(&self.cipher)?;
-        self.recv_sequence = envelope.sequence;
         self.update_activity();
         Ok(plaintext)
     }
@@ -150,6 +196,8 @@ mod tests {
             last_activity: now,
             send_sequence: 0,
             recv_sequence: 0,
+            recv_bitmap: 0,
+            recv_initialized: false,
         }
     }
 
@@ -184,11 +232,54 @@ mod tests {
             created_at: 0,
             last_activity: 0,
             send_sequence: 0,
-            recv_sequence: 5, // already seen sequence 5
+            recv_sequence: 5, // already seen up to sequence 5
+            recv_bitmap: 0b111111, // sequences 0-5 seen
+            recv_initialized: true,
         };
 
         // Should reject replay
         assert!(receiver.open(&envelope).is_err());
+    }
+
+    #[test]
+    fn sliding_window_allows_out_of_order() {
+        let key = SymmetricKey::from_bytes([0x42; 32]);
+        let suite = CipherSuite::Aes256Gcm;
+        let session_id = SessionId::new();
+        let sender = AgentId::new();
+
+        let mut session = SwarmSession {
+            session_id: session_id.clone(),
+            peer: sender.clone(),
+            cipher: SwarmCipher::with_suite(&key, suite),
+            created_at: 0,
+            last_activity: 0,
+            send_sequence: 0,
+            recv_sequence: 0,
+            recv_bitmap: 0,
+            recv_initialized: false,
+        };
+
+        // Receive seq 5 first
+        let cipher = SwarmCipher::with_suite(&key, suite);
+        let env5 = SwarmEnvelope::seal(&cipher, &sender, &session_id, 5, b"msg5").unwrap();
+        session.open(&env5).unwrap();
+
+        // Receive seq 3 (out of order, within window) — should succeed
+        let env3 = SwarmEnvelope::seal(&cipher, &sender, &session_id, 3, b"msg3").unwrap();
+        session.open(&env3).unwrap();
+
+        // Replay seq 3 again — should fail
+        let env3_dup = SwarmEnvelope::seal(&cipher, &sender, &session_id, 3, b"msg3").unwrap();
+        assert!(session.open(&env3_dup).is_err());
+
+        // Seq 0 is within the window (5-0 = 5 < 128) — should succeed
+        let env0 = SwarmEnvelope::seal(&cipher, &sender, &session_id, 0, b"msg0").unwrap();
+        session.open(&env0).unwrap();
+
+        // Replay seq 0 — should fail
+        let env0_dup = SwarmEnvelope::seal(&cipher, &sender, &session_id, 0, b"msg0").unwrap();
+        assert!(session.open(&env0_dup).is_err());
     }
 
     #[tokio::test]

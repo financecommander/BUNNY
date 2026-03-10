@@ -4,6 +4,8 @@ use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey};
 
+use zeroize::Zeroize;
+
 use crate::cipher::CipherSuite;
 use crate::error::{CryptoError, Result};
 use crate::kdf::derive_session_key;
@@ -80,6 +82,9 @@ impl KeyExchangeInitiator {
 
         let session_key = derive_session_key(&ikm, b"bunny-session-key")?;
 
+        // Securely wipe IKM — it contains raw shared secrets
+        ikm.zeroize();
+
         Ok((session_key, response.agreed_suite))
     }
 }
@@ -115,6 +120,10 @@ impl KeyExchangeResponder {
         ikm.extend_from_slice(shared_pq.as_ref());
 
         let session_key = derive_session_key(&ikm, b"bunny-session-key")?;
+
+        // Securely wipe IKM — it contains raw shared secrets
+        ikm.zeroize();
+
         let agreed_suite = bundle.preferred_suite;
 
         let response = KeyExchangeResponse {
