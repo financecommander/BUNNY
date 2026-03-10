@@ -265,7 +265,7 @@ impl TernaryPacket {
         Self::from_bytes(&plaintext)
     }
 
-    fn hash_model_name(name: &str) -> [u8; 32] {
+    pub fn hash_model_name(name: &str) -> [u8; 32] {
         use sha2::{Sha256, Digest};
         let mut hasher = Sha256::new();
         hasher.update(name.as_bytes());

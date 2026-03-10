@@ -1,26 +1,21 @@
 [package]
 name = "bunny-core"
+description = "Core types and services for the BUNNY runtime"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-build = "build.rs"
+
 [dependencies]
 bunny-crypto = { path = "../crypto" }
-anyhow = "1.0.95"
-thiserror = "2.0.11"
-tracing = "0.1.41"
-tokio = { version = "1.43.0", features = ["full"] }
-serde = { version = "1.0.217", features = ["derive"] }
-jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
-libsql = "0.9.29"
-lancedb = "0.26.2"
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tokio = { version = "1.43", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 bytes = "1.9"
-tonic = "0.14.5"
-prost = "0.14.3"
+prost = "0.14"
 uuid = { version = "1.16", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-async-stripe = { version = "1.0.0-rc.2", features = ["rustls-tls-webpki-roots"] }
-[build-dependencies]
-tonic-build = "0.14.5"

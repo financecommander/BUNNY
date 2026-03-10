@@ -9,6 +9,6 @@ use bunny_core::vector::BunnyVectorStore;
 pub async fn startup() -> anyhow::Result<()> {
     let vector_store = BunnyVectorStore::new("./data/lance").await?;
     tokio::spawn(threat_hunter::start_threat_hunter(vector_store));
-    info!("🚀 Sandbox + Threat Hunter ready");
+    info!("Sandbox + Threat Hunter ready");
     Ok(())
 }
