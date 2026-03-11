@@ -247,6 +247,13 @@
       "file": "BSA-38-unified-life-work-intelligence.md",
       "status": "active",
       "description": "Defines life/work balance intelligence, cross-domain coordination, and human productivity optimization"
+    },
+    {
+      "id": "BSA-39",
+      "name": "Personal Identity, Reputation & Digital Twin",
+      "file": "BSA-39-digital-twin-identity.md",
+      "status": "active",
+      "description": "Defines personal identity modeling, reputation awareness, and persistent digital representation"
     }
   ]
 }
