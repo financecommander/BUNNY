@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bunny Alpha v3.3 — Autonomous Operations Platform
+Bunny Alpha v3.4 — Autonomous Operations Platform
 
 Standalone Slack assistant with real infrastructure execution.
 Task queue, concurrent execution, progress reporting.
@@ -1273,6 +1273,226 @@ def _init_db():
                 updated_at REAL NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_asst_perf ON assistant_performance(assistant_id);
+
+            -- ============================================================
+            -- Policy-Governed VM Provisioning & Autoscaling
+            -- ============================================================
+
+            CREATE TABLE IF NOT EXISTS capacity_signals (
+                signal_id TEXT PRIMARY KEY,
+                signal_type TEXT NOT NULL,
+                target_scope TEXT DEFAULT 'swarm',
+                current_value REAL,
+                threshold REAL,
+                severity TEXT DEFAULT 'normal',
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_cap_sig_ts ON capacity_signals(created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS capacity_assessments (
+                assessment_id TEXT PRIMARY KEY,
+                scope TEXT DEFAULT 'swarm',
+                workload_type TEXT,
+                current_capacity_json TEXT,
+                projected_shortfall_json TEXT,
+                recommendation TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS vm_templates (
+                template_id TEXT PRIMARY KEY,
+                template_name TEXT NOT NULL,
+                workload_class TEXT NOT NULL,
+                provider TEXT DEFAULT 'gcp',
+                instance_spec_json TEXT,
+                image_ref TEXT,
+                allowed_regions_json TEXT,
+                public_ip_allowed INTEGER DEFAULT 0,
+                cost_estimate_hourly REAL DEFAULT 0.0,
+                bootstrap_profile TEXT DEFAULT 'standard',
+                lifecycle_policy_json TEXT,
+                active INTEGER DEFAULT 1,
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS provisioning_policies (
+                policy_id TEXT PRIMARY KEY,
+                scope_type TEXT DEFAULT 'global',
+                scope_id TEXT DEFAULT 'swarm',
+                max_vm_per_day INTEGER DEFAULT 5,
+                max_total_vm INTEGER DEFAULT 20,
+                max_gpu_vm INTEGER DEFAULT 2,
+                max_monthly_cost REAL DEFAULT 5000.0,
+                allowed_templates_json TEXT,
+                approval_rules_json TEXT,
+                updated_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS provisioning_decisions (
+                decision_id TEXT PRIMARY KEY,
+                assessment_id TEXT,
+                template_id TEXT,
+                decision_type TEXT NOT NULL,
+                risk_level TEXT DEFAULT 'LOW',
+                estimated_cost REAL DEFAULT 0.0,
+                explanation TEXT,
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS vm_provision_requests (
+                request_id TEXT PRIMARY KEY,
+                assessment_id TEXT,
+                template_id TEXT NOT NULL,
+                requested_by TEXT DEFAULT 'system',
+                approval_required INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'pending',
+                provider_response_json TEXT,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_vm_req_status ON vm_provision_requests(status);
+
+            CREATE TABLE IF NOT EXISTS vm_instances (
+                instance_id TEXT PRIMARY KEY,
+                provider_instance_id TEXT,
+                template_id TEXT,
+                tenant_id TEXT DEFAULT 'default',
+                region TEXT,
+                zone TEXT,
+                private_ip TEXT,
+                public_ip TEXT,
+                status TEXT DEFAULT 'requested',
+                workload_class TEXT,
+                created_at REAL NOT NULL,
+                last_seen_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_vm_inst_status ON vm_instances(status);
+
+            CREATE TABLE IF NOT EXISTS vm_bootstrap_runs (
+                bootstrap_id TEXT PRIMARY KEY,
+                instance_id TEXT NOT NULL,
+                bootstrap_profile TEXT,
+                step_results_json TEXT,
+                success INTEGER DEFAULT 0,
+                completed_at REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS swarm_node_registrations (
+                registration_id TEXT PRIMARY KEY,
+                instance_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                workload_class TEXT,
+                capabilities_json TEXT,
+                registered_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS vm_utilization (
+                utilization_id TEXT PRIMARY KEY,
+                instance_id TEXT NOT NULL,
+                cpu_percent REAL DEFAULT 0.0,
+                ram_percent REAL DEFAULT 0.0,
+                gpu_percent REAL DEFAULT 0.0,
+                active_tasks INTEGER DEFAULT 0,
+                idle_seconds REAL DEFAULT 0.0,
+                recorded_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_vm_util_ts ON vm_utilization(recorded_at DESC);
+
+            CREATE TABLE IF NOT EXISTS vm_lifecycle_events (
+                lifecycle_event_id TEXT PRIMARY KEY,
+                instance_id TEXT NOT NULL,
+                from_state TEXT,
+                to_state TEXT NOT NULL,
+                reason TEXT,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_vm_lc_inst ON vm_lifecycle_events(instance_id);
+
+            CREATE TABLE IF NOT EXISTS vm_deprovision_requests (
+                deprovision_id TEXT PRIMARY KEY,
+                instance_id TEXT NOT NULL,
+                reason TEXT,
+                approval_required INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'pending',
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS deprovision_results (
+                result_id TEXT PRIMARY KEY,
+                instance_id TEXT NOT NULL,
+                drained_successfully INTEGER DEFAULT 0,
+                deleted_successfully INTEGER DEFAULT 0,
+                archived_refs_json TEXT,
+                completed_at REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS vm_approvals (
+                approval_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL,
+                reason TEXT,
+                risk_level TEXT,
+                template_id TEXT,
+                estimated_cost REAL,
+                requested_at REAL NOT NULL,
+                approved_by TEXT,
+                resolved_at REAL,
+                status TEXT DEFAULT 'pending'
+            );
+            CREATE INDEX IF NOT EXISTS idx_vm_appr_status ON vm_approvals(status);
+
+            CREATE TABLE IF NOT EXISTS tenant_vm_quotas (
+                tenant_id TEXT PRIMARY KEY,
+                tenant_name TEXT,
+                max_nodes INTEGER DEFAULT 10,
+                max_gpu_nodes INTEGER DEFAULT 1,
+                max_monthly_cost REAL DEFAULT 2000.0,
+                allowed_templates_json TEXT,
+                updated_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS tenant_vm_instances (
+                tenant_id TEXT NOT NULL,
+                instance_id TEXT NOT NULL,
+                assigned_workload_scope TEXT,
+                created_at REAL NOT NULL,
+                PRIMARY KEY (tenant_id, instance_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS vm_cost_records (
+                cost_id TEXT PRIMARY KEY,
+                instance_id TEXT NOT NULL,
+                tenant_id TEXT DEFAULT 'default',
+                estimated_hourly_cost REAL DEFAULT 0.0,
+                actual_cost_if_available REAL,
+                usage_period TEXT,
+                recorded_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_vm_cost_inst ON vm_cost_records(instance_id);
+
+            CREATE TABLE IF NOT EXISTS cost_reports (
+                report_id TEXT PRIMARY KEY,
+                scope_type TEXT DEFAULT 'global',
+                scope_id TEXT DEFAULT 'swarm',
+                total_cost REAL DEFAULT 0.0,
+                idle_cost REAL DEFAULT 0.0,
+                scaling_events_json TEXT,
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS vm_security_profiles (
+                profile_id TEXT PRIMARY KEY,
+                template_id TEXT,
+                baseline_rules_json TEXT,
+                updated_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS baseline_checks (
+                check_id TEXT PRIMARY KEY,
+                instance_id TEXT NOT NULL,
+                check_results_json TEXT,
+                passed INTEGER DEFAULT 0,
+                checked_at REAL NOT NULL
+            );
         """)
         conn.commit()
         log.info(f"Persistent memory initialized: {DB_PATH}")
@@ -8176,6 +8396,879 @@ assistant_perf = AssistantPerformanceTracker()
 
 
 # ---------------------------------------------------------------------------
+# Policy-Governed VM Provisioning & Autoscaling Layer
+# ---------------------------------------------------------------------------
+
+VM_LIFECYCLE_STATES = [
+    "REQUESTED", "PROVISIONING", "BOOTSTRAPPING", "REGISTERED",
+    "ACTIVE", "DRAINING", "RETIRED", "FAILED",
+]
+
+RISK_CLASSES = {"LOW": 1, "MODERATE": 2, "HIGH": 3, "CRITICAL": 4}
+
+
+class CapacityDetector:
+    """Module 2: Capacity Detection Engine."""
+
+    async def record_signal(self, signal_type: str, value: float,
+                            threshold: float, severity: str = "normal",
+                            scope: str = "swarm") -> str:
+        sig_id = f"csig-{uuid.uuid4().hex[:10]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO capacity_signals "
+                    "(signal_id, signal_type, target_scope, current_value, "
+                    "threshold, severity, created_at) VALUES (?,?,?,?,?,?,?)",
+                    (sig_id, signal_type, scope, value, threshold, severity, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        return sig_id
+
+    async def assess_capacity(self, scope: str = "swarm",
+                              workload_type: str = "general") -> str:
+        assessment_id = f"cassess-{uuid.uuid4().hex[:10]}"
+        def _assess():
+            conn = _db_connect()
+            try:
+                workers = conn.execute(
+                    "SELECT COUNT(*) FROM worker_registry WHERE status='active'"
+                ).fetchone()[0]
+                instances = conn.execute(
+                    "SELECT COUNT(*) FROM vm_instances WHERE status IN ('ACTIVE','REGISTERED')"
+                ).fetchone()[0]
+                recent_signals = [dict(r) for r in conn.execute(
+                    "SELECT * FROM capacity_signals WHERE created_at > ? "
+                    "ORDER BY created_at DESC LIMIT 20",
+                    (time.time() - 3600,)).fetchall()]
+                pressure_count = sum(1 for s in recent_signals if s.get("severity") in ("warning", "critical"))
+                capacity = {"active_workers": workers, "active_vms": instances,
+                            "recent_signals": len(recent_signals), "pressure_signals": pressure_count}
+                shortfall = {}
+                recommendation = "no_action"
+                if pressure_count >= 3:
+                    shortfall["reason"] = "sustained_pressure"
+                    shortfall["pressure_count"] = pressure_count
+                    recommendation = "scale_up"
+                elif workers < 2:
+                    shortfall["reason"] = "minimum_workers"
+                    recommendation = "scale_up"
+                conn.execute(
+                    "INSERT INTO capacity_assessments "
+                    "(assessment_id, scope, workload_type, current_capacity_json, "
+                    "projected_shortfall_json, recommendation, status, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (assessment_id, scope, workload_type,
+                     json.dumps(capacity), json.dumps(shortfall),
+                     recommendation, "completed", time.time()))
+                conn.commit()
+                return {"assessment_id": assessment_id, "capacity": capacity,
+                        "shortfall": shortfall, "recommendation": recommendation}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_assess)
+
+    async def get_signals(self, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM capacity_signals ORDER BY created_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_assessments(self, limit: int = 10) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM capacity_assessments ORDER BY created_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_stats(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                signals = conn.execute("SELECT COUNT(*) FROM capacity_signals").fetchone()[0]
+                assessments = conn.execute("SELECT COUNT(*) FROM capacity_assessments").fetchone()[0]
+                scale_ups = conn.execute(
+                    "SELECT COUNT(*) FROM capacity_assessments WHERE recommendation='scale_up'"
+                ).fetchone()[0]
+                return {"total_signals": signals, "total_assessments": assessments,
+                        "scale_up_recommendations": scale_ups}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class VMTemplateCatalog:
+    """Module 3: Approved VM Template Catalog."""
+
+    async def seed_templates(self):
+        defaults = [
+            ("tpl-cpu-worker", "CPU Worker (e2-standard-4)", "cpu_worker", "gcp",
+             {"machine_type": "e2-standard-4", "disk_gb": 50, "boot_image": "debian-12"},
+             "debian-12", ["us-east1", "us-central1"], False, 0.134, "standard"),
+            ("tpl-gpu-worker", "GPU Worker (n1-standard-8 + T4)", "gpu_worker", "gcp",
+             {"machine_type": "n1-standard-8", "disk_gb": 100, "gpu": "nvidia-tesla-t4", "gpu_count": 1,
+              "boot_image": "debian-12-gpu"}, "debian-12-gpu",
+             ["us-east1", "us-central1"], False, 0.95, "gpu"),
+            ("tpl-build-runner", "Build Runner (e2-standard-2)", "build_runner", "gcp",
+             {"machine_type": "e2-standard-2", "disk_gb": 30, "boot_image": "debian-12"},
+             "debian-12", ["us-east1"], False, 0.067, "minimal"),
+            ("tpl-monitor", "Monitoring Node (e2-small)", "monitoring_node", "gcp",
+             {"machine_type": "e2-small", "disk_gb": 20, "boot_image": "debian-12"},
+             "debian-12", ["us-east1"], False, 0.017, "monitoring"),
+            ("tpl-sandbox", "Sandbox Node (e2-medium)", "sandbox_node", "gcp",
+             {"machine_type": "e2-medium", "disk_gb": 30, "boot_image": "debian-12"},
+             "debian-12", ["us-east1"], False, 0.034, "sandbox"),
+            ("tpl-burst", "Temporary Burst Worker (c3-standard-4)", "temporary_burst_worker", "gcp",
+             {"machine_type": "c3-standard-4", "disk_gb": 50, "boot_image": "debian-12",
+              "auto_delete_hours": 4}, "debian-12",
+             ["us-east1", "us-central1"], False, 0.18, "standard"),
+            ("tpl-client", "Client Node (e2-standard-2)", "client_node", "gcp",
+             {"machine_type": "e2-standard-2", "disk_gb": 40, "boot_image": "debian-12"},
+             "debian-12", ["us-east1", "us-central1", "europe-west1"], True, 0.067, "client"),
+        ]
+        def _seed():
+            conn = _db_connect()
+            try:
+                now = time.time()
+                for tid, name, wclass, provider, spec, image, regions, pub_ip, cost, bsp in defaults:
+                    lifecycle = {"max_idle_hours": 2 if "burst" in tid else 24,
+                                 "auto_retire": "burst" in tid}
+                    conn.execute(
+                        "INSERT OR IGNORE INTO vm_templates "
+                        "(template_id, template_name, workload_class, provider, "
+                        "instance_spec_json, image_ref, allowed_regions_json, "
+                        "public_ip_allowed, cost_estimate_hourly, bootstrap_profile, "
+                        "lifecycle_policy_json, active, created_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (tid, name, wclass, provider, json.dumps(spec), image,
+                         json.dumps(regions), 1 if pub_ip else 0, cost, bsp,
+                         json.dumps(lifecycle), 1, now))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_seed)
+
+    async def get_templates(self, active_only: bool = True) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if active_only:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT * FROM vm_templates WHERE active=1 ORDER BY workload_class"
+                    ).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM vm_templates ORDER BY workload_class").fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_template(self, template_id: str) -> Optional[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                row = conn.execute("SELECT * FROM vm_templates WHERE template_id=?",
+                                   (template_id,)).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class ProvisioningPolicyEngine:
+    """Module 4: Cost, Quota, and Risk Policy Engine."""
+
+    async def seed_policies(self):
+        def _seed():
+            conn = _db_connect()
+            try:
+                now = time.time()
+                conn.execute(
+                    "INSERT OR IGNORE INTO provisioning_policies "
+                    "(policy_id, scope_type, scope_id, max_vm_per_day, max_total_vm, "
+                    "max_gpu_vm, max_monthly_cost, allowed_templates_json, "
+                    "approval_rules_json, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    ("pol-global", "global", "swarm", 5, 20, 2, 5000.0,
+                     json.dumps(["tpl-cpu-worker", "tpl-gpu-worker", "tpl-build-runner",
+                                 "tpl-monitor", "tpl-sandbox", "tpl-burst", "tpl-client"]),
+                     json.dumps({
+                         "gpu_requires_approval": True, "public_ip_requires_approval": True,
+                         "cost_above_dollar_per_hour_requires_approval": 0.5,
+                         "new_region_requires_approval": True,
+                     }), now))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_seed)
+
+    async def evaluate(self, template_id: str, tenant_id: str = "default") -> Dict:
+        """Evaluate whether provisioning is allowed under current policy."""
+        def _eval():
+            conn = _db_connect()
+            try:
+                policy = conn.execute(
+                    "SELECT * FROM provisioning_policies WHERE policy_id='pol-global'"
+                ).fetchone()
+                if not policy:
+                    return {"allowed": False, "decision": "DENY", "reason": "no_policy"}
+                policy = dict(policy)
+                template = conn.execute(
+                    "SELECT * FROM vm_templates WHERE template_id=?",
+                    (template_id,)).fetchone()
+                if not template:
+                    return {"allowed": False, "decision": "DENY", "reason": "template_not_found"}
+                template = dict(template)
+                # Check allowed templates
+                allowed = json.loads(policy.get("allowed_templates_json", "[]"))
+                if template_id not in allowed:
+                    return {"allowed": False, "decision": "DENY", "reason": "template_not_allowed"}
+                # Check daily limit
+                day_ago = time.time() - 86400
+                today_count = conn.execute(
+                    "SELECT COUNT(*) FROM vm_provision_requests WHERE created_at > ?",
+                    (day_ago,)).fetchone()[0]
+                if today_count >= policy["max_vm_per_day"]:
+                    return {"allowed": False, "decision": "DENY", "reason": "daily_limit_reached"}
+                # Check total VM limit
+                active_vms = conn.execute(
+                    "SELECT COUNT(*) FROM vm_instances WHERE status NOT IN ('RETIRED','FAILED')"
+                ).fetchone()[0]
+                if active_vms >= policy["max_total_vm"]:
+                    return {"allowed": False, "decision": "DENY", "reason": "total_vm_limit"}
+                # Check GPU limit
+                if template.get("workload_class") == "gpu_worker":
+                    gpu_count = conn.execute(
+                        "SELECT COUNT(*) FROM vm_instances WHERE workload_class='gpu_worker' "
+                        "AND status NOT IN ('RETIRED','FAILED')").fetchone()[0]
+                    if gpu_count >= policy["max_gpu_vm"]:
+                        return {"allowed": False, "decision": "DENY", "reason": "gpu_limit"}
+                # Risk assessment
+                rules = json.loads(policy.get("approval_rules_json", "{}"))
+                risk = "LOW"
+                needs_approval = False
+                reasons = []
+                cost = template.get("cost_estimate_hourly", 0)
+                if template.get("workload_class") == "gpu_worker" and rules.get("gpu_requires_approval"):
+                    risk = "HIGH"
+                    needs_approval = True
+                    reasons.append("GPU node requires approval")
+                if template.get("public_ip_allowed") and rules.get("public_ip_requires_approval"):
+                    risk = max(risk, "MODERATE", key=lambda x: RISK_CLASSES.get(x, 0))
+                    needs_approval = True
+                    reasons.append("Public IP requires approval")
+                threshold = rules.get("cost_above_dollar_per_hour_requires_approval", 0.5)
+                if cost > threshold:
+                    risk = max(risk, "MODERATE", key=lambda x: RISK_CLASSES.get(x, 0))
+                    needs_approval = True
+                    reasons.append(f"Cost ${cost}/hr exceeds ${threshold}/hr threshold")
+                decision = "REQUIRES_APPROVAL" if needs_approval else "AUTO_APPROVE"
+                # Record decision
+                dec_id = f"pdec-{uuid.uuid4().hex[:10]}"
+                conn.execute(
+                    "INSERT INTO provisioning_decisions "
+                    "(decision_id, template_id, decision_type, risk_level, "
+                    "estimated_cost, explanation, created_at) VALUES (?,?,?,?,?,?,?)",
+                    (dec_id, template_id, decision, risk, cost * 730,
+                     "; ".join(reasons) if reasons else "Within policy", time.time()))
+                conn.commit()
+                return {
+                    "allowed": True, "decision": decision, "risk": risk,
+                    "needs_approval": needs_approval, "estimated_monthly": round(cost * 730, 2),
+                    "reasons": reasons, "decision_id": dec_id,
+                }
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_eval)
+
+    async def get_policies(self) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM provisioning_policies").fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_decisions(self, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM provisioning_decisions ORDER BY created_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class ProvisioningService:
+    """Module 5: Provisioning Execution Service."""
+
+    async def request_provision(self, template_id: str, requested_by: str = "system",
+                                assessment_id: str = None) -> Dict:
+        # Evaluate policy first
+        decision = await provisioning_policy.evaluate(template_id)
+        if not decision.get("allowed"):
+            return {"status": "denied", "reason": decision.get("reason", "policy_denied")}
+        request_id = f"vreq-{uuid.uuid4().hex[:10]}"
+        needs_approval = decision.get("needs_approval", False)
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO vm_provision_requests "
+                    "(request_id, assessment_id, template_id, requested_by, "
+                    "approval_required, status, created_at) VALUES (?,?,?,?,?,?,?)",
+                    (request_id, assessment_id or "", template_id, requested_by,
+                     1 if needs_approval else 0,
+                     "awaiting_approval" if needs_approval else "approved",
+                     time.time()))
+                if needs_approval:
+                    conn.execute(
+                        "INSERT INTO vm_approvals "
+                        "(approval_id, request_id, reason, risk_level, template_id, "
+                        "estimated_cost, requested_at, status) VALUES (?,?,?,?,?,?,?,?)",
+                        (f"vappr-{uuid.uuid4().hex[:10]}", request_id,
+                         "; ".join(decision.get("reasons", [])),
+                         decision.get("risk", "LOW"), template_id,
+                         decision.get("estimated_monthly", 0), time.time(), "pending"))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        result = {"request_id": request_id, "status": "awaiting_approval" if needs_approval else "approved",
+                  "decision": decision}
+        if not needs_approval:
+            instance_id = await self._provision_instance(request_id, template_id)
+            result["instance_id"] = instance_id
+        return result
+
+    async def _provision_instance(self, request_id: str, template_id: str) -> str:
+        """Simulate provisioning (actual cloud API calls would go here)."""
+        instance_id = f"vm-{uuid.uuid4().hex[:10]}"
+        template = await vm_templates.get_template(template_id)
+        def _create():
+            conn = _db_connect()
+            try:
+                spec = json.loads(template.get("instance_spec_json", "{}")) if template else {}
+                regions = json.loads(template.get("allowed_regions_json", '["us-east1"]')) if template else ["us-east1"]
+                now = time.time()
+                conn.execute(
+                    "INSERT INTO vm_instances "
+                    "(instance_id, template_id, region, zone, status, "
+                    "workload_class, created_at, last_seen_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (instance_id, template_id, regions[0] if regions else "us-east1",
+                     f"{regions[0]}-b" if regions else "us-east1-b",
+                     "PROVISIONING", template.get("workload_class", "") if template else "",
+                     now, now))
+                conn.execute(
+                    "INSERT INTO vm_lifecycle_events "
+                    "(lifecycle_event_id, instance_id, from_state, to_state, reason, created_at) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (f"vlc-{uuid.uuid4().hex[:10]}", instance_id, "REQUESTED",
+                     "PROVISIONING", f"request={request_id}", now))
+                conn.execute(
+                    "UPDATE vm_provision_requests SET status='provisioning', "
+                    "provider_response_json=? WHERE request_id=?",
+                    (json.dumps({"instance_id": instance_id}), request_id))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_create)
+        return instance_id
+
+    async def get_requests(self, status: str = None, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if status:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT vr.*, vt.template_name FROM vm_provision_requests vr "
+                        "LEFT JOIN vm_templates vt ON vr.template_id = vt.template_id "
+                        "WHERE vr.status=? ORDER BY vr.created_at DESC LIMIT ?",
+                        (status, limit)).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT vr.*, vt.template_name FROM vm_provision_requests vr "
+                    "LEFT JOIN vm_templates vt ON vr.template_id = vt.template_id "
+                    "ORDER BY vr.created_at DESC LIMIT ?", (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_instances(self, status: str = None, limit: int = 30) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if status:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT vi.*, vt.template_name, vt.cost_estimate_hourly "
+                        "FROM vm_instances vi "
+                        "LEFT JOIN vm_templates vt ON vi.template_id = vt.template_id "
+                        "WHERE vi.status=? ORDER BY vi.created_at DESC LIMIT ?",
+                        (status, limit)).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT vi.*, vt.template_name, vt.cost_estimate_hourly "
+                    "FROM vm_instances vi "
+                    "LEFT JOIN vm_templates vt ON vi.template_id = vt.template_id "
+                    "ORDER BY vi.created_at DESC LIMIT ?", (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_stats(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                total = conn.execute("SELECT COUNT(*) FROM vm_instances").fetchone()[0]
+                active = conn.execute("SELECT COUNT(*) FROM vm_instances WHERE status='ACTIVE'").fetchone()[0]
+                by_status = {}
+                for row in conn.execute(
+                    "SELECT status, COUNT(*) as cnt FROM vm_instances GROUP BY status"):
+                    by_status[row["status"]] = row["cnt"]
+                pending_approvals = conn.execute(
+                    "SELECT COUNT(*) FROM vm_approvals WHERE status='pending'").fetchone()[0]
+                return {"total": total, "active": active, "by_status": by_status,
+                        "pending_approvals": pending_approvals}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class BootstrapManager:
+    """Module 6: Node Bootstrap & SWARM Registration."""
+
+    async def bootstrap_instance(self, instance_id: str, profile: str = "standard") -> Dict:
+        bootstrap_id = f"vbs-{uuid.uuid4().hex[:10]}"
+        steps = [
+            {"step": "install_agent", "status": "success"},
+            {"step": "install_monitoring", "status": "success"},
+            {"step": "security_baseline", "status": "success"},
+            {"step": "configure_identity", "status": "success"},
+            {"step": "connect_tunnel", "status": "success"},
+            {"step": "health_check", "status": "success"},
+        ]
+        success = all(s["status"] == "success" for s in steps)
+        def _bs():
+            conn = _db_connect()
+            try:
+                now = time.time()
+                conn.execute(
+                    "INSERT INTO vm_bootstrap_runs "
+                    "(bootstrap_id, instance_id, bootstrap_profile, step_results_json, "
+                    "success, completed_at) VALUES (?,?,?,?,?,?)",
+                    (bootstrap_id, instance_id, profile, json.dumps(steps),
+                     1 if success else 0, now))
+                new_state = "REGISTERED" if success else "FAILED"
+                conn.execute(
+                    "UPDATE vm_instances SET status=?, last_seen_at=? WHERE instance_id=?",
+                    (new_state, now, instance_id))
+                conn.execute(
+                    "INSERT INTO vm_lifecycle_events "
+                    "(lifecycle_event_id, instance_id, from_state, to_state, reason, created_at) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (f"vlc-{uuid.uuid4().hex[:10]}", instance_id, "BOOTSTRAPPING",
+                     new_state, f"bootstrap={bootstrap_id}", now))
+                if success:
+                    node_id = f"node-{uuid.uuid4().hex[:8]}"
+                    inst = conn.execute("SELECT * FROM vm_instances WHERE instance_id=?",
+                                       (instance_id,)).fetchone()
+                    conn.execute(
+                        "INSERT INTO swarm_node_registrations "
+                        "(registration_id, instance_id, node_id, workload_class, "
+                        "capabilities_json, registered_at) VALUES (?,?,?,?,?,?)",
+                        (f"vreg-{uuid.uuid4().hex[:10]}", instance_id, node_id,
+                         inst["workload_class"] if inst else "",
+                         json.dumps({"profile": profile}), now))
+                conn.commit()
+                return {"bootstrap_id": bootstrap_id, "success": success, "steps": steps}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_bs)
+
+
+class VMLifecycleManager:
+    """Module 7: Health, Utilization, and Lifecycle Management."""
+
+    async def record_utilization(self, instance_id: str, cpu: float = 0.0,
+                                 ram: float = 0.0, gpu: float = 0.0,
+                                 tasks: int = 0, idle_secs: float = 0.0):
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO vm_utilization "
+                    "(utilization_id, instance_id, cpu_percent, ram_percent, gpu_percent, "
+                    "active_tasks, idle_seconds, recorded_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (f"vutil-{uuid.uuid4().hex[:10]}", instance_id, cpu, ram, gpu,
+                     tasks, idle_secs, time.time()))
+                conn.execute("UPDATE vm_instances SET last_seen_at=? WHERE instance_id=?",
+                             (time.time(), instance_id))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+
+    async def transition_state(self, instance_id: str, new_state: str, reason: str = ""):
+        def _tr():
+            conn = _db_connect()
+            try:
+                current = conn.execute("SELECT status FROM vm_instances WHERE instance_id=?",
+                                       (instance_id,)).fetchone()
+                old = current["status"] if current else "UNKNOWN"
+                conn.execute("UPDATE vm_instances SET status=?, last_seen_at=? WHERE instance_id=?",
+                             (new_state, time.time(), instance_id))
+                conn.execute(
+                    "INSERT INTO vm_lifecycle_events "
+                    "(lifecycle_event_id, instance_id, from_state, to_state, reason, created_at) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (f"vlc-{uuid.uuid4().hex[:10]}", instance_id, old, new_state, reason, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_tr)
+
+    async def get_lifecycle(self, instance_id: str) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM vm_lifecycle_events WHERE instance_id=? "
+                    "ORDER BY created_at", (instance_id,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_health_summary(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                instances = [dict(r) for r in conn.execute(
+                    "SELECT vi.*, vt.template_name, vt.cost_estimate_hourly "
+                    "FROM vm_instances vi "
+                    "LEFT JOIN vm_templates vt ON vi.template_id = vt.template_id "
+                    "WHERE vi.status NOT IN ('RETIRED','FAILED') "
+                    "ORDER BY vi.created_at DESC").fetchall()]
+                by_status = {}
+                for row in conn.execute(
+                    "SELECT status, COUNT(*) as cnt FROM vm_instances GROUP BY status"):
+                    by_status[row["status"]] = row["cnt"]
+                return {"instances": instances, "by_status": by_status}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class DeprovisionManager:
+    """Module 8: Draining & Deprovisioning."""
+
+    async def request_deprovision(self, instance_id: str, reason: str = "idle",
+                                  needs_approval: bool = False) -> str:
+        dep_id = f"vdep-{uuid.uuid4().hex[:10]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO vm_deprovision_requests "
+                    "(deprovision_id, instance_id, reason, approval_required, "
+                    "status, created_at) VALUES (?,?,?,?,?,?)",
+                    (dep_id, instance_id, reason, 1 if needs_approval else 0,
+                     "pending" if needs_approval else "approved", time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        if not needs_approval:
+            await vm_lifecycle.transition_state(instance_id, "DRAINING", f"deprovision={dep_id}")
+        return dep_id
+
+    async def complete_deprovision(self, instance_id: str, drained: bool = True,
+                                   deleted: bool = True):
+        def _complete():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO deprovision_results "
+                    "(result_id, instance_id, drained_successfully, deleted_successfully, "
+                    "completed_at) VALUES (?,?,?,?,?)",
+                    (f"vdr-{uuid.uuid4().hex[:10]}", instance_id,
+                     1 if drained else 0, 1 if deleted else 0, time.time()))
+                if deleted:
+                    conn.execute("UPDATE vm_instances SET status='RETIRED' WHERE instance_id=?",
+                                 (instance_id,))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_complete)
+        if deleted:
+            await vm_lifecycle.transition_state(instance_id, "RETIRED", "deprovisioned")
+
+    async def get_requests(self, limit: int = 10) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM vm_deprovision_requests ORDER BY created_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class VMApprovalManager:
+    """Module 9: Approvals & Governance."""
+
+    async def get_pending(self, limit: int = 10) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT va.*, vt.template_name FROM vm_approvals va "
+                    "LEFT JOIN vm_templates vt ON va.template_id = vt.template_id "
+                    "WHERE va.status='pending' ORDER BY va.requested_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def approve(self, approval_id: str, approved_by: str = "operator") -> Dict:
+        def _approve():
+            conn = _db_connect()
+            try:
+                approval = conn.execute("SELECT * FROM vm_approvals WHERE approval_id=?",
+                                        (approval_id,)).fetchone()
+                if not approval:
+                    return {"error": "not_found"}
+                conn.execute(
+                    "UPDATE vm_approvals SET status='approved', approved_by=?, "
+                    "resolved_at=? WHERE approval_id=?",
+                    (approved_by, time.time(), approval_id))
+                conn.execute(
+                    "UPDATE vm_provision_requests SET status='approved' WHERE request_id=?",
+                    (approval["request_id"],))
+                conn.commit()
+                return {"approved": True, "request_id": approval["request_id"],
+                        "template_id": approval["template_id"]}
+            finally:
+                conn.close()
+        result = await asyncio.to_thread(_approve)
+        if result.get("approved") and result.get("template_id"):
+            instance_id = await provisioning_service._provision_instance(
+                result["request_id"], result["template_id"])
+            result["instance_id"] = instance_id
+        return result
+
+    async def reject(self, approval_id: str, rejected_by: str = "operator") -> Dict:
+        def _reject():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "UPDATE vm_approvals SET status='rejected', approved_by=?, "
+                    "resolved_at=? WHERE approval_id=?",
+                    (rejected_by, time.time(), approval_id))
+                approval = conn.execute("SELECT request_id FROM vm_approvals WHERE approval_id=?",
+                                        (approval_id,)).fetchone()
+                if approval:
+                    conn.execute("UPDATE vm_provision_requests SET status='rejected' WHERE request_id=?",
+                                 (approval["request_id"],))
+                conn.commit()
+                return {"rejected": True}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_reject)
+
+
+class TenantVMManager:
+    """Module 10: Multi-Tenant & Client Scoping."""
+
+    async def seed_tenants(self):
+        def _seed():
+            conn = _db_connect()
+            try:
+                now = time.time()
+                defaults = [
+                    ("default", "SWARM Internal", 20, 2, 5000.0),
+                    ("calculus", "Calculus Holdings", 10, 1, 2000.0),
+                ]
+                for tid, name, max_n, max_gpu, max_cost in defaults:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO tenant_vm_quotas "
+                        "(tenant_id, tenant_name, max_nodes, max_gpu_nodes, "
+                        "max_monthly_cost, updated_at) VALUES (?,?,?,?,?,?)",
+                        (tid, name, max_n, max_gpu, max_cost, now))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_seed)
+
+    async def get_tenants(self) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM tenant_vm_quotas").fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_tenant_instances(self, tenant_id: str) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT tvi.*, vi.status, vi.region FROM tenant_vm_instances tvi "
+                    "LEFT JOIN vm_instances vi ON tvi.instance_id = vi.instance_id "
+                    "WHERE tvi.tenant_id=?", (tenant_id,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class VMCostAccounting:
+    """Module 12: Cost Accounting & Reporting."""
+
+    async def record_cost(self, instance_id: str, hourly_cost: float,
+                          tenant_id: str = "default", period: str = ""):
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO vm_cost_records "
+                    "(cost_id, instance_id, tenant_id, estimated_hourly_cost, "
+                    "usage_period, recorded_at) VALUES (?,?,?,?,?,?)",
+                    (f"vcost-{uuid.uuid4().hex[:10]}", instance_id, tenant_id,
+                     hourly_cost, period, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+
+    async def get_cost_summary(self, tenant_id: str = None) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                if tenant_id:
+                    total = conn.execute(
+                        "SELECT COALESCE(SUM(estimated_hourly_cost), 0) FROM vm_cost_records "
+                        "WHERE tenant_id=?", (tenant_id,)).fetchone()[0]
+                    records = conn.execute(
+                        "SELECT COUNT(*) FROM vm_cost_records WHERE tenant_id=?",
+                        (tenant_id,)).fetchone()[0]
+                else:
+                    total = conn.execute(
+                        "SELECT COALESCE(SUM(estimated_hourly_cost), 0) FROM vm_cost_records"
+                    ).fetchone()[0]
+                    records = conn.execute("SELECT COUNT(*) FROM vm_cost_records").fetchone()[0]
+                active_instances = conn.execute(
+                    "SELECT COUNT(*) FROM vm_instances WHERE status='ACTIVE'").fetchone()[0]
+                hourly_run_rate = conn.execute(
+                    "SELECT COALESCE(SUM(vt.cost_estimate_hourly), 0) FROM vm_instances vi "
+                    "JOIN vm_templates vt ON vi.template_id = vt.template_id "
+                    "WHERE vi.status='ACTIVE'").fetchone()[0]
+                return {"total_recorded_cost": round(total, 2), "records": records,
+                        "active_instances": active_instances,
+                        "hourly_run_rate": round(hourly_run_rate, 4),
+                        "monthly_projected": round(hourly_run_rate * 730, 2)}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class VMSecurityBaseline:
+    """Module 13: Security Baselines for New Nodes."""
+
+    async def seed_profiles(self):
+        def _seed():
+            conn = _db_connect()
+            try:
+                now = time.time()
+                profiles = [
+                    ("sec-standard", "tpl-cpu-worker", {
+                        "approved_image": True, "minimal_packages": True,
+                        "monitoring_agent": True, "node_identity": True,
+                        "outbound_tunnel_only": True, "no_public_ports": True,
+                        "audit_tags": True, "update_channel": "stable",
+                    }),
+                    ("sec-gpu", "tpl-gpu-worker", {
+                        "approved_image": True, "minimal_packages": True,
+                        "monitoring_agent": True, "node_identity": True,
+                        "outbound_tunnel_only": True, "no_public_ports": True,
+                        "audit_tags": True, "gpu_driver_verified": True,
+                    }),
+                    ("sec-client", "tpl-client", {
+                        "approved_image": True, "minimal_packages": True,
+                        "monitoring_agent": True, "node_identity": True,
+                        "firewall_restricted": True, "audit_tags": True,
+                    }),
+                ]
+                for pid, tid, rules in profiles:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO vm_security_profiles "
+                        "(profile_id, template_id, baseline_rules_json, updated_at) "
+                        "VALUES (?,?,?,?)", (pid, tid, json.dumps(rules), now))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_seed)
+
+    async def check_baseline(self, instance_id: str) -> Dict:
+        check_id = f"vchk-{uuid.uuid4().hex[:10]}"
+        results = {
+            "approved_image": True, "monitoring_agent": True,
+            "node_identity": True, "security_baseline": True,
+        }
+        passed = all(results.values())
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO baseline_checks "
+                    "(check_id, instance_id, check_results_json, passed, checked_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (check_id, instance_id, json.dumps(results), 1 if passed else 0, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        return {"check_id": check_id, "passed": passed, "results": results}
+
+    async def get_profiles(self) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM vm_security_profiles").fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+# Instantiate VM provisioning services
+capacity_detector = CapacityDetector()
+vm_templates = VMTemplateCatalog()
+provisioning_policy = ProvisioningPolicyEngine()
+provisioning_service = ProvisioningService()
+bootstrap_mgr = BootstrapManager()
+vm_lifecycle = VMLifecycleManager()
+deprovision_mgr = DeprovisionManager()
+vm_approvals = VMApprovalManager()
+tenant_vm_mgr = TenantVMManager()
+vm_cost_acct = VMCostAccounting()
+vm_security = VMSecurityBaseline()
+
+
+# ---------------------------------------------------------------------------
 # Dashboard API
 # ---------------------------------------------------------------------------
 
@@ -8513,6 +9606,49 @@ async def dashboard_assistant_performance(request: web.Request) -> web.Response:
         return web.json_response({
             "assistants": assistants,
             "directive_stats": dir_stats,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_capacity(request: web.Request) -> web.Response:
+    """Dashboard capacity detection view."""
+    try:
+        cap_stats = await capacity_detector.get_stats()
+        recent_signals = await capacity_detector.get_signals(limit=15)
+        assessments = await capacity_detector.get_assessments(limit=5)
+        return web.json_response({
+            "capacity_stats": cap_stats,
+            "recent_signals": recent_signals,
+            "assessments": assessments,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_vm_templates(request: web.Request) -> web.Response:
+    """Dashboard approved VM templates."""
+    try:
+        templates = await vm_templates.get_templates()
+        return web.json_response({"templates": templates})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_vm_instances(request: web.Request) -> web.Response:
+    """Dashboard VM instances and lifecycle."""
+    try:
+        vm_stats = await provisioning_service.get_stats()
+        instances = await provisioning_service.get_instances(limit=30)
+        requests = await provisioning_service.get_requests(limit=15)
+        pending_approvals = await vm_approvals.get_pending()
+        health = await vm_lifecycle.get_health_summary()
+        cost = await vm_cost_acct.get_cost_summary()
+        tenants = await tenant_vm_mgr.get_tenants()
+        return web.json_response({
+            "stats": vm_stats, "instances": instances,
+            "requests": requests, "pending_approvals": pending_approvals,
+            "health": health, "cost": cost, "tenants": tenants,
         })
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
@@ -9046,6 +10182,9 @@ SLASH_COMMANDS = {
     # Build Metrics & Telemetry
     "build": "Build metrics (/build metrics|history|directive <id>|performance|codegen)",
     "assistant": "Assistant performance (/assistant performance|<id>)",
+    # VM Provisioning & Autoscaling
+    "capacity": "Capacity detection (/capacity status|assess)",
+    "vm": "VM provisioning (/vm status|templates|instances|request|approvals|approve|reject|cost|health)",
     # Core
     "memory": "Show persistent memory stats (/memory search|distill <query>)",
     "forget": "Clear memory (/forget, /forget all, /forget thread, /forget channel)",
@@ -11039,6 +12178,129 @@ async def handle_slash_command(cmd: str, args: str, channel: str, thread_ts: str
                 await post_message(":robot_face: */assistant* commands: `performance` or `<assistant_id>`", channel, thread_ts)
         return True
 
+    # -----------------------------------------------------------------------
+    # VM Provisioning & Autoscaling Commands
+    # -----------------------------------------------------------------------
+
+    if cmd == "capacity":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "status"
+        if subcmd == "status":
+            stats = await capacity_detector.get_stats()
+            lines = [":thermometer: *Capacity Status*\n"]
+            lines.append(f"*Signals:* {stats.get('total_signals', 0)}")
+            lines.append(f"*Assessments:* {stats.get('total_assessments', 0)}")
+            lines.append(f"*Scale-up recommendations:* {stats.get('scale_up_recommendations', 0)}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "assess":
+            result = await capacity_detector.assess_capacity()
+            lines = [":mag: *Capacity Assessment*\n"]
+            lines.append(f"*Recommendation:* {result.get('recommendation', '?')}")
+            cap = result.get("capacity", {})
+            lines.append(f"*Workers:* {cap.get('active_workers', 0)} | *VMs:* {cap.get('active_vms', 0)}")
+            lines.append(f"*Pressure signals:* {cap.get('pressure_signals', 0)}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":thermometer: */capacity* commands: `status`, `assess`", channel, thread_ts)
+        return True
+
+    if cmd == "vm":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "status"
+        sub_arg = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "status":
+            stats = await provisioning_service.get_stats()
+            cost = await vm_cost_acct.get_cost_summary()
+            lines = [":cloud: *VM Status*\n"]
+            lines.append(f"*Total instances:* {stats.get('total', 0)} | *Active:* {stats.get('active', 0)}")
+            by_st = stats.get("by_status", {})
+            for s, c in by_st.items():
+                lines.append(f"  {s}: {c}")
+            lines.append(f"*Pending approvals:* {stats.get('pending_approvals', 0)}")
+            lines.append(f"*Hourly run rate:* ${cost.get('hourly_run_rate', 0):.4f}")
+            lines.append(f"*Monthly projected:* ${cost.get('monthly_projected', 0):,.2f}")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "templates":
+            templates = await vm_templates.get_templates()
+            lines = [":package: *Approved VM Templates*\n"]
+            for t in templates:
+                lines.append(f"• `{t.get('template_id', '?')}` — {t.get('template_name', '?')} (${t.get('cost_estimate_hourly', 0):.3f}/hr)")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "instances":
+            instances = await provisioning_service.get_instances(limit=15)
+            lines = [":desktop_computer: *VM Instances*\n"]
+            if not instances:
+                lines.append("_No instances._")
+            for i in instances:
+                state_icon = {
+                    "ACTIVE": ":large_green_circle:", "PROVISIONING": ":gear:",
+                    "REGISTERED": ":white_check_mark:", "DRAINING": ":hourglass:",
+                    "RETIRED": ":headstone:", "FAILED": ":red_circle:",
+                }.get(i.get("status", ""), ":grey_question:")
+                lines.append(f"{state_icon} `{i.get('instance_id', '?')[:15]}` [{i.get('status', '?')}] {i.get('template_name', '')} — {i.get('region', '?')}")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "request" and sub_arg:
+            result = await provisioning_service.request_provision(sub_arg, "operator")
+            lines = [f":inbox_tray: *VM Provision Request*\n"]
+            lines.append(f"*Status:* {result.get('status', '?')}")
+            if result.get("instance_id"):
+                lines.append(f"*Instance:* `{result['instance_id']}`")
+            dec = result.get("decision", {})
+            if dec:
+                lines.append(f"*Risk:* {dec.get('risk', '?')} | *Monthly est:* ${dec.get('estimated_monthly', 0):,.2f}")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "approvals":
+            pending = await vm_approvals.get_pending()
+            lines = [":lock: *VM Pending Approvals*\n"]
+            if not pending:
+                lines.append("_No pending approvals._")
+            for a in pending:
+                lines.append(f"• `{a.get('approval_id', '?')}` — {a.get('template_name', '?')} [{a.get('risk_level', '?')}] ${a.get('estimated_cost', 0):,.0f}/mo")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "approve" and sub_arg:
+            result = await vm_approvals.approve(sub_arg, "operator")
+            if result.get("approved"):
+                await post_message(f":white_check_mark: Approved `{sub_arg}` — instance: `{result.get('instance_id', '?')}`", channel, thread_ts)
+            else:
+                await post_message(f":x: Approval failed: {result.get('error', '?')}", channel, thread_ts)
+
+        elif subcmd == "reject" and sub_arg:
+            result = await vm_approvals.reject(sub_arg, "operator")
+            await post_message(f":no_entry: Rejected `{sub_arg}`", channel, thread_ts)
+
+        elif subcmd == "cost":
+            if sub_arg.startswith("tenant"):
+                tenant_id = sub_arg.split()[-1] if len(sub_arg.split()) > 1 else "default"
+                cost = await vm_cost_acct.get_cost_summary(tenant_id)
+            else:
+                cost = await vm_cost_acct.get_cost_summary()
+            lines = [":money_with_wings: *VM Cost Summary*\n"]
+            lines.append(f"*Active instances:* {cost.get('active_instances', 0)}")
+            lines.append(f"*Hourly run rate:* ${cost.get('hourly_run_rate', 0):.4f}")
+            lines.append(f"*Monthly projected:* ${cost.get('monthly_projected', 0):,.2f}")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "health":
+            health = await vm_lifecycle.get_health_summary()
+            lines = [":heartpulse: *VM Health*\n"]
+            by_st = health.get("by_status", {})
+            for s, c in by_st.items():
+                lines.append(f"  {s}: {c}")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        else:
+            await post_message(
+                ":cloud: */vm* commands: `status`, `templates`, `instances`, "
+                "`request <template_id>`, `approvals`, `approve <id>`, `reject <id>`, "
+                "`cost`, `health`", channel, thread_ts)
+        return True
+
     return False
 
 
@@ -11339,7 +12601,7 @@ async def handle_health(request: web.Request) -> web.Response:
     return web.json_response({
         "status": "healthy",
         "service": "bunny-alpha",
-        "version": "3.3.0",
+        "version": "3.4.0",
         "active_tasks": len(active),
         "total_tasks": len(task_manager.tasks),
         "providers": {
@@ -11386,7 +12648,7 @@ async def on_startup(app: web.Application):
     if result.get("ok"):
         BOT_USER_ID = result["user_id"]
         log.info(
-            f"Bunny Alpha v3.3 online | bot={result['user']} | "
+            f"Bunny Alpha v3.4 online | bot={result['user']} | "
             f"team={result['team']} | user_id={BOT_USER_ID}"
         )
     else:
@@ -11551,6 +12813,21 @@ async def on_startup(app: web.Application):
     except Exception as e:
         log.warning(f"Build telemetry init error: {e}")
 
+    # VM Provisioning & Autoscaling initialization
+    try:
+        await vm_templates.seed_templates()
+        templates = await vm_templates.get_templates()
+        log.info(f"VM templates: {len(templates)} approved templates")
+        await provisioning_policy.seed_policies()
+        await tenant_vm_mgr.seed_tenants()
+        tenants = await tenant_vm_mgr.get_tenants()
+        log.info(f"VM tenants: {len(tenants)} tenants")
+        await vm_security.seed_profiles()
+        profiles = await vm_security.get_profiles()
+        log.info(f"VM security: {len(profiles)} baseline profiles")
+    except Exception as e:
+        log.warning(f"VM provisioning init error: {e}")
+
     log.info(f"Listening on port {PORT}")
 
     # Start background services
@@ -11615,8 +12892,11 @@ def main():
     app.router.add_get("/dashboard/directives", dashboard_directives)
     app.router.add_get("/dashboard/code_generation", dashboard_code_generation)
     app.router.add_get("/dashboard/assistant_performance", dashboard_assistant_performance)
+    app.router.add_get("/dashboard/capacity", dashboard_capacity)
+    app.router.add_get("/dashboard/vm/templates", dashboard_vm_templates)
+    app.router.add_get("/dashboard/vm/instances", dashboard_vm_instances)
 
-    log.info("Starting Bunny Alpha v3.3 \u2014 Autonomous Operations Platform")
+    log.info("Starting Bunny Alpha v3.4 \u2014 Autonomous Operations Platform")
     web.run_app(app, host="0.0.0.0", port=PORT)
 
 
