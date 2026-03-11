@@ -233,6 +233,13 @@
       "file": "BSA-36-personal-learning-education.md",
       "status": "active",
       "description": "Defines education support, skill development, and knowledge growth assistance via Jenny"
+    },
+    {
+      "id": "BSA-37",
+      "name": "Dual-Agent User Model (Jack + Jenny)",
+      "file": "BSA-37-dual-agent-user-model.md",
+      "status": "active",
+      "description": "Defines enterprise agent + personal agent coordination, domain separation, and shared memory bridge"
     }
   ]
 }
