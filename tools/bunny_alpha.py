@@ -22,12 +22,14 @@ Environment:
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import hmac
 import json
 import logging
 import os
 import re
+import sqlite3
 import time
 import uuid
 from collections import deque
@@ -79,50 +81,466 @@ VMS = {
 }
 
 MAX_CONCURRENT_TASKS = 5
-MEMORY_SIZE = 50  # messages per channel
+MEMORY_SIZE = 50  # context window size (messages sent to AI)
+SUMMARIZE_THRESHOLD = 80  # auto-summarize when channel exceeds this many messages
+DB_PATH = os.environ.get("BUNNY_DB_PATH", "/opt/bunny-alpha/bunny_memory.db")
 
 
 # ---------------------------------------------------------------------------
-# Conversation Memory
+# Persistent Memory (SQLite-backed)
 # ---------------------------------------------------------------------------
 
-class ConversationMemory:
-    """Per-channel message history for context-aware conversations."""
-
-    def __init__(self, max_per_channel: int = MEMORY_SIZE):
-        self.max = max_per_channel
-        self._channels: Dict[str, Deque[Dict[str, str]]] = {}
-
-    def add(self, channel: str, role: str, content: str):
-        """Store a message. role = 'user' or 'assistant'."""
-        if channel not in self._channels:
-            self._channels[channel] = deque(maxlen=self.max)
-        self._channels[channel].append({
-            "role": role,
-            "content": content,
-            "ts": time.time(),
-        })
-
-    def get_history(self, channel: str) -> List[Dict[str, str]]:
-        """Return message history as [{role, content}, ...] for AI context."""
-        msgs = self._channels.get(channel, [])
-        return [{"role": m["role"], "content": m["content"]} for m in msgs]
-
-    def clear(self, channel: str):
-        """Clear history for a channel."""
-        if channel in self._channels:
-            self._channels[channel].clear()
-
-    def clear_all(self):
-        """Clear all history."""
-        self._channels.clear()
-
-    def stats(self) -> Dict[str, int]:
-        """Return message counts per channel."""
-        return {ch: len(msgs) for ch, msgs in self._channels.items()}
+def _db_connect() -> sqlite3.Connection:
+    """Create a new SQLite connection (one per call for thread safety)."""
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
 
 
-memory = ConversationMemory()
+def _init_db():
+    """Create database tables if they don't exist."""
+    conn = _db_connect()
+    try:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id TEXT NOT NULL,
+                thread_ts TEXT,
+                user_id TEXT,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                token_estimate INTEGER DEFAULT 0,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(channel_id, thread_ts, created_at);
+
+            CREATE TABLE IF NOT EXISTS memory_summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_type TEXT NOT NULL,
+                scope_id TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                message_count INTEGER DEFAULT 0,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_summaries_scope ON memory_summaries(scope_type, scope_id);
+
+            CREATE TABLE IF NOT EXISTS task_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                channel_id TEXT,
+                thread_ts TEXT,
+                request TEXT,
+                status TEXT DEFAULT 'pending',
+                result_summary TEXT,
+                created_at REAL NOT NULL,
+                completed_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id);
+            CREATE INDEX IF NOT EXISTS idx_task_runs_channel ON task_runs(channel_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS preferences (
+                user_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (user_id, key)
+            );
+        """)
+        conn.commit()
+        log.info(f"Persistent memory initialized: {DB_PATH}")
+    finally:
+        conn.close()
+
+
+class PersistentMemory:
+    """SQLite-backed conversation memory that survives restarts.
+
+    All public methods are async (use asyncio.to_thread for DB ops).
+    The context window (messages sent to AI) is capped at MEMORY_SIZE,
+    but all messages are stored persistently.
+    """
+
+    def __init__(self, context_window: int = MEMORY_SIZE):
+        self.context_window = context_window
+
+    # -- helpers --
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        """Rough token estimate (~4 chars per token)."""
+        return max(1, len(text) // 4)
+
+    @staticmethod
+    def _run_sync(fn, *args):
+        """Run a sync DB function in the thread pool."""
+        return asyncio.to_thread(fn, *args)
+
+    # -- message storage --
+
+    async def add(self, channel: str, role: str, content: str,
+                  thread_ts: str = None, user_id: str = None):
+        """Store a message persistently."""
+        def _insert():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO messages (channel_id, thread_ts, user_id, role, content, token_estimate, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (channel, thread_ts, user_id, role, content,
+                     self._estimate_tokens(content), time.time()),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        await self._run_sync(_insert)
+
+    async def get_history(self, channel: str, thread_ts: str = None,
+                          limit: int = None) -> List[Dict[str, str]]:
+        """Return recent message history for AI context."""
+        n = limit or self.context_window
+
+        def _query():
+            conn = _db_connect()
+            try:
+                if thread_ts:
+                    rows = conn.execute(
+                        "SELECT role, content FROM messages "
+                        "WHERE channel_id = ? AND thread_ts = ? "
+                        "ORDER BY created_at DESC LIMIT ?",
+                        (channel, thread_ts, n),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT role, content FROM messages "
+                        "WHERE channel_id = ? "
+                        "ORDER BY created_at DESC LIMIT ?",
+                        (channel, n),
+                    ).fetchall()
+                # Reverse to chronological order
+                return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
+            finally:
+                conn.close()
+        return await self._run_sync(_query)
+
+    async def clear(self, channel: str, thread_ts: str = None):
+        """Clear messages for a channel or thread."""
+        def _delete():
+            conn = _db_connect()
+            try:
+                if thread_ts:
+                    conn.execute(
+                        "DELETE FROM messages WHERE channel_id = ? AND thread_ts = ?",
+                        (channel, thread_ts),
+                    )
+                else:
+                    conn.execute("DELETE FROM messages WHERE channel_id = ?", (channel,))
+                    conn.execute(
+                        "DELETE FROM memory_summaries WHERE scope_type = 'channel' AND scope_id = ?",
+                        (channel,),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+        await self._run_sync(_delete)
+
+    async def clear_all(self):
+        """Clear all messages and summaries."""
+        def _delete():
+            conn = _db_connect()
+            try:
+                conn.execute("DELETE FROM messages")
+                conn.execute("DELETE FROM memory_summaries")
+                conn.commit()
+            finally:
+                conn.close()
+        await self._run_sync(_delete)
+
+    async def stats(self) -> Dict[str, Any]:
+        """Return comprehensive memory stats."""
+        def _query():
+            conn = _db_connect()
+            try:
+                # Per-channel counts
+                channels = {}
+                for row in conn.execute(
+                    "SELECT channel_id, COUNT(*) as cnt FROM messages GROUP BY channel_id"
+                ).fetchall():
+                    channels[row["channel_id"]] = row["cnt"]
+
+                # Total messages
+                total = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+
+                # DB size
+                db_size = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+
+                # Summary count
+                summaries = conn.execute("SELECT COUNT(*) FROM memory_summaries").fetchone()[0]
+
+                # Task runs
+                task_count = conn.execute("SELECT COUNT(*) FROM task_runs").fetchone()[0]
+
+                # Preferences
+                pref_count = conn.execute("SELECT COUNT(*) FROM preferences").fetchone()[0]
+
+                # Oldest message
+                oldest = conn.execute(
+                    "SELECT MIN(created_at) FROM messages"
+                ).fetchone()[0]
+
+                return {
+                    "channels": channels,
+                    "total_messages": total,
+                    "summaries": summaries,
+                    "task_runs": task_count,
+                    "preferences": pref_count,
+                    "db_size_bytes": db_size,
+                    "oldest_message": oldest,
+                }
+            finally:
+                conn.close()
+        return await self._run_sync(_query)
+
+    # -- summaries --
+
+    async def get_summary(self, scope_type: str, scope_id: str) -> Optional[str]:
+        """Get the latest summary for a scope (channel, thread, etc.)."""
+        def _query():
+            conn = _db_connect()
+            try:
+                row = conn.execute(
+                    "SELECT summary FROM memory_summaries "
+                    "WHERE scope_type = ? AND scope_id = ? "
+                    "ORDER BY updated_at DESC LIMIT 1",
+                    (scope_type, scope_id),
+                ).fetchone()
+                return row["summary"] if row else None
+            finally:
+                conn.close()
+        return await self._run_sync(_query)
+
+    async def save_summary(self, scope_type: str, scope_id: str,
+                           summary: str, message_count: int = 0):
+        """Save or update a summary for a scope."""
+        def _upsert():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO memory_summaries (scope_type, scope_id, summary, message_count, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (scope_type, scope_id, summary, message_count, time.time()),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        await self._run_sync(_upsert)
+
+    async def auto_summarize_if_needed(self, channel: str):
+        """If a channel has too many messages, summarize older ones."""
+        def _check_and_summarize():
+            conn = _db_connect()
+            try:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE channel_id = ?", (channel,)
+                ).fetchone()[0]
+                if count <= SUMMARIZE_THRESHOLD:
+                    return None  # No summarization needed
+
+                # Get oldest messages beyond the context window
+                keep = self.context_window
+                rows = conn.execute(
+                    "SELECT id, role, content FROM messages "
+                    "WHERE channel_id = ? ORDER BY created_at ASC LIMIT ?",
+                    (channel, count - keep),
+                ).fetchall()
+
+                if not rows:
+                    return None
+
+                # Build text for summarization
+                text_parts = []
+                ids_to_remove = []
+                for r in rows:
+                    text_parts.append(f"{r['role']}: {r['content'][:200]}")
+                    ids_to_remove.append(r["id"])
+
+                return {
+                    "text": "\n".join(text_parts),
+                    "ids": ids_to_remove,
+                    "count": len(ids_to_remove),
+                }
+            finally:
+                conn.close()
+
+        result = await self._run_sync(_check_and_summarize)
+        if not result:
+            return None
+        return result  # Caller will summarize via AI and call complete_summarize
+
+    async def complete_summarize(self, channel: str, summary: str,
+                                 message_ids: List[int]):
+        """After AI generates summary, store it and remove old messages."""
+        def _do():
+            conn = _db_connect()
+            try:
+                # Save summary
+                conn.execute(
+                    "INSERT INTO memory_summaries (scope_type, scope_id, summary, message_count, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    ("channel", channel, summary, len(message_ids), time.time()),
+                )
+                # Remove old messages
+                placeholders = ",".join("?" * len(message_ids))
+                conn.execute(
+                    f"DELETE FROM messages WHERE id IN ({placeholders})",
+                    message_ids,
+                )
+                conn.commit()
+                log.info(f"Summarized {len(message_ids)} messages for channel {channel}")
+            finally:
+                conn.close()
+        await self._run_sync(_do)
+
+    # -- task runs --
+
+    async def log_task(self, task_id: str, channel: str, thread_ts: str,
+                       request: str, status: str = "pending"):
+        """Log a task run."""
+        def _insert():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO task_runs (task_id, channel_id, thread_ts, request, status, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (task_id, channel, thread_ts, request, status, time.time()),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        await self._run_sync(_insert)
+
+    async def update_task(self, task_id: str, status: str, result_summary: str = None):
+        """Update a task run status."""
+        def _update():
+            conn = _db_connect()
+            try:
+                if result_summary:
+                    conn.execute(
+                        "UPDATE task_runs SET status = ?, result_summary = ?, completed_at = ? "
+                        "WHERE task_id = ?",
+                        (status, result_summary, time.time(), task_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE task_runs SET status = ? WHERE task_id = ?",
+                        (status, task_id),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+        await self._run_sync(_update)
+
+    async def get_recent_tasks(self, channel: str = None, limit: int = 10) -> List[Dict]:
+        """Get recent task runs."""
+        def _query():
+            conn = _db_connect()
+            try:
+                if channel:
+                    rows = conn.execute(
+                        "SELECT * FROM task_runs WHERE channel_id = ? "
+                        "ORDER BY created_at DESC LIMIT ?",
+                        (channel, limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM task_runs ORDER BY created_at DESC LIMIT ?",
+                        (limit,),
+                    ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await self._run_sync(_query)
+
+    # -- preferences --
+
+    async def set_preference(self, user_id: str, key: str, value: str):
+        """Set a user preference."""
+        def _upsert():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO preferences (user_id, key, value, updated_at) "
+                    "VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(user_id, key) DO UPDATE SET value = ?, updated_at = ?",
+                    (user_id, key, value, time.time(), value, time.time()),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        await self._run_sync(_upsert)
+
+    async def get_preference(self, user_id: str, key: str) -> Optional[str]:
+        """Get a user preference."""
+        def _query():
+            conn = _db_connect()
+            try:
+                row = conn.execute(
+                    "SELECT value FROM preferences WHERE user_id = ? AND key = ?",
+                    (user_id, key),
+                ).fetchone()
+                return row["value"] if row else None
+            finally:
+                conn.close()
+        return await self._run_sync(_query)
+
+    async def get_all_preferences(self, user_id: str) -> Dict[str, str]:
+        """Get all preferences for a user."""
+        def _query():
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    "SELECT key, value FROM preferences WHERE user_id = ?",
+                    (user_id,),
+                ).fetchall()
+                return {r["key"]: r["value"] for r in rows}
+            finally:
+                conn.close()
+        return await self._run_sync(_query)
+
+    # -- search / knowledge base --
+
+    async def search_messages(self, query: str, channel: str = None,
+                              limit: int = 20) -> List[Dict]:
+        """Search message history by content."""
+        def _query_db():
+            conn = _db_connect()
+            try:
+                pattern = f"%{query}%"
+                if channel:
+                    rows = conn.execute(
+                        "SELECT channel_id, role, content, created_at FROM messages "
+                        "WHERE channel_id = ? AND content LIKE ? "
+                        "ORDER BY created_at DESC LIMIT ?",
+                        (channel, pattern, limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT channel_id, role, content, created_at FROM messages "
+                        "WHERE content LIKE ? "
+                        "ORDER BY created_at DESC LIMIT ?",
+                        (pattern, limit),
+                    ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await self._run_sync(_query_db)
+
+
+# Initialize persistent memory
+_init_db()
+memory = PersistentMemory()
 
 
 # ---------------------------------------------------------------------------
@@ -806,7 +1224,7 @@ async def query_ai(prompt: str, system: Optional[str] = None,
                    channel: Optional[str] = None) -> str:
     """Query AI with fallback: Portal (active model) -> DeepSeek -> Groq -> xAI -> Ollama."""
     sys_prompt = system or BUNNY_ALPHA_PROMPT
-    history = memory.get_history(channel) if channel else []
+    history = (await memory.get_history(channel)) if channel else []
 
     # Try AI Portal first (gives access to ALL models)
     if AI_PORTAL_TOKEN:
@@ -975,8 +1393,9 @@ SLASH_COMMANDS = {
     "model": "Switch active model (e.g. /model gpt5, /model claude)",
     "logs": "Show recent Bunny Alpha logs",
     "health": "Run health check on all services",
-    "memory": "Show conversation memory stats",
-    "forget": "Clear conversation memory for this channel",
+    "memory": "Show persistent memory stats (/memory search <query>)",
+    "forget": "Clear memory (/forget, /forget all, /forget thread, /forget channel)",
+    "pref": "Set/get preferences (/pref key value, /pref key, /pref)",
     "help": "Show available commands",
 }
 
@@ -995,25 +1414,79 @@ async def handle_slash_command(cmd: str, args: str, channel: str, thread_ts: str
         return True
 
     if cmd == "memory":
-        stats = memory.stats()
-        history = memory.get_history(channel)
-        lines = [f":brain: *Conversation Memory*\n"]
-        lines.append(f"This channel: *{len(history)}* / {MEMORY_SIZE} messages")
-        if stats:
-            total = sum(stats.values())
-            lines.append(f"All channels: *{total}* messages across *{len(stats)}* channels")
-        else:
-            lines.append("No conversations stored yet.")
-        await post_message("\n".join(lines), channel, thread_ts)
+        sub = args.strip().lower()
+        if sub == "stats" or not sub:
+            s = await memory.stats()
+            ch_count = len(s["channels"])
+            total = s["total_messages"]
+            this_ch = s["channels"].get(channel, 0)
+            db_kb = s["db_size_bytes"] / 1024
+            lines = [":brain: *Persistent Memory*\n"]
+            lines.append(f"*This channel:* {this_ch} messages")
+            lines.append(f"*All channels:* {total} messages across {ch_count} channels")
+            lines.append(f"*Summaries:* {s['summaries']}")
+            lines.append(f"*Task runs:* {s['task_runs']}")
+            lines.append(f"*Preferences:* {s['preferences']}")
+            lines.append(f"*DB size:* {db_kb:.1f} KB")
+            if s["oldest_message"]:
+                import datetime
+                age = datetime.datetime.fromtimestamp(s["oldest_message"]).strftime("%Y-%m-%d %H:%M")
+                lines.append(f"*Oldest message:* {age}")
+            lines.append(f"\n_Context window: {MEMORY_SIZE} messages | Auto-summarize at {SUMMARIZE_THRESHOLD}_")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif sub == "search" and len(args.split()) > 1:
+            query = " ".join(args.split()[1:])
+            results = await memory.search_messages(query, limit=10)
+            if results:
+                lines = [f":mag: *Memory search:* `{query}` ({len(results)} results)\n"]
+                for r in results:
+                    import datetime
+                    ts = datetime.datetime.fromtimestamp(r["created_at"]).strftime("%m/%d %H:%M")
+                    snippet = r["content"][:120].replace("\n", " ")
+                    lines.append(f"`{ts}` [{r['role']}] {snippet}")
+                await post_message("\n".join(lines), channel, thread_ts)
+            else:
+                await post_message(f":mag: No results for `{query}`", channel, thread_ts)
         return True
 
     if cmd == "forget":
-        if args.strip() == "all":
-            memory.clear_all()
+        sub = args.strip().lower()
+        if sub == "all":
+            await memory.clear_all()
             await post_message(":wastebasket: All conversation memory cleared.", channel, thread_ts)
+        elif sub == "thread" and thread_ts:
+            await memory.clear(channel, thread_ts)
+            await post_message(":wastebasket: Memory cleared for this thread.", channel, thread_ts)
+        elif sub.startswith("channel"):
+            target_ch = sub.split()[-1] if len(sub.split()) > 1 else channel
+            await memory.clear(target_ch)
+            await post_message(f":wastebasket: Memory cleared for channel `{target_ch}`.", channel, thread_ts)
         else:
-            memory.clear(channel)
+            await memory.clear(channel)
             await post_message(":wastebasket: Memory cleared for this channel.", channel, thread_ts)
+        return True
+
+    if cmd == "pref":
+        parts = args.strip().split(maxsplit=1)
+        if len(parts) == 2:
+            key, value = parts
+            await memory.set_preference("global", key, value)
+            await post_message(f":gear: Preference set: `{key}` = `{value}`", channel, thread_ts)
+        elif len(parts) == 1:
+            val = await memory.get_preference("global", parts[0])
+            if val:
+                await post_message(f":gear: `{parts[0]}` = `{val}`", channel, thread_ts)
+            else:
+                await post_message(f":gear: Preference `{parts[0]}` not set.", channel, thread_ts)
+        else:
+            prefs = await memory.get_all_preferences("global")
+            if prefs:
+                lines = [":gear: *Preferences*\n"]
+                for k, v in prefs.items():
+                    lines.append(f"  `{k}` = `{v}`")
+                await post_message("\n".join(lines), channel, thread_ts)
+            else:
+                await post_message(":gear: No preferences set.", channel, thread_ts)
         return True
 
     if cmd == "status":
@@ -1301,8 +1774,21 @@ async def _process_message(text: str, channel: str, thread_ts: Optional[str]):
             if await handle_slash_command(cmd, args, channel, thread_ts):
                 return
 
-        # Store user message in memory
-        memory.add(channel, "user", text)
+        # Store user message in persistent memory
+        await memory.add(channel, "user", text)
+
+        # Auto-summarize old messages if threshold exceeded
+        summarize_data = await memory.auto_summarize_if_needed(channel)
+        if summarize_data:
+            try:
+                summary_text = await query_ai(
+                    f"Summarize this conversation history in 2-3 sentences for future context:\n\n{summarize_data['text'][:2000]}",
+                    system="You are a helpful summarizer. Produce a concise summary of the key topics and outcomes.",
+                )
+                if summary_text:
+                    await memory.complete_summarize(channel, summary_text, summarize_data["ids"])
+            except Exception as e:
+                log.warning(f"Auto-summarize failed: {e}")
 
         # Send to AI with conversation history
         response = await query_ai(text, channel=channel)
@@ -1335,7 +1821,7 @@ async def _process_message(text: str, channel: str, thread_ts: Optional[str]):
             for t in image_tasks:
                 img_url = t.result.replace("IMAGE_URL:", "").strip()
                 await post_image(img_url, t.cmd[:100], channel, thread_ts, title=t.cmd[:100])
-                memory.add(channel, "assistant", f"[Generated image: {t.cmd[:80]}]")
+                await memory.add(channel, "assistant", f"[Generated image: {t.cmd[:80]}]")
 
             # Summarize text results if any
             if text_tasks:
@@ -1357,16 +1843,16 @@ async def _process_message(text: str, channel: str, thread_ts: Optional[str]):
                 summary = extract_chat_text(summary)
                 if summary:
                     await post_message(summary, channel, thread_ts)
-                    memory.add(channel, "assistant", summary)
+                    await memory.add(channel, "assistant", summary)
             elif not image_tasks:
-                memory.add(channel, "assistant", f"[Executed {len(tasks)} tasks]")
+                await memory.add(channel, "assistant", f"[Executed {len(tasks)} tasks]")
         else:
             # Pure chat response
             if len(response) > 3900:
                 response = response[:3900] + "\n...(truncated)"
             await post_message(response, channel, thread_ts)
             # Store assistant response in memory
-            memory.add(channel, "assistant", response)
+            await memory.add(channel, "assistant", response)
 
     except Exception as e:
         log.error(f"Message processing failed: {e}", exc_info=True)
@@ -1403,12 +1889,12 @@ async def _process_image(files: List[Dict], text: str, channel: str, thread_ts: 
             data_url = f"data:{mimetype};base64,{b64}"
 
             prompt = text if text else "Describe this image in detail. What do you see?"
-            memory.add(channel, "user", f"[Shared image: {filename}] {prompt}")
+            await memory.add(channel, "user", f"[Shared image: {filename}] {prompt}")
 
             description = await describe_image_with_vision(data_url, prompt)
             if description:
                 await post_message(description, channel, thread_ts)
-                memory.add(channel, "assistant", description)
+                await memory.add(channel, "assistant", description)
             else:
                 await post_message(
                     ":eyes: I can see you shared an image, but my vision API isn't available right now. "
@@ -1517,6 +2003,19 @@ async def on_startup(app: web.Application):
     log.info(f"Fallback providers: {', '.join(providers) or 'NONE'}")
     log.info(f"VMs: {', '.join(VMS.keys())}")
     log.info(f"Max concurrent tasks: {MAX_CONCURRENT_TASKS}")
+
+    # Memory stats
+    try:
+        mem_stats = await memory.stats()
+        log.info(
+            f"Persistent memory: {mem_stats['total_messages']} messages, "
+            f"{mem_stats['summaries']} summaries, "
+            f"{mem_stats['task_runs']} task runs, "
+            f"DB={mem_stats['db_size_bytes']/1024:.1f}KB"
+        )
+    except Exception as e:
+        log.warning(f"Memory stats unavailable: {e}")
+
     log.info(f"Listening on port {PORT}")
 
     # Start periodic cleanup
