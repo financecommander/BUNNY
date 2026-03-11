@@ -591,6 +591,7 @@ You are Bunny Alpha. Friendly. Capable. Always ready."""
 class TaskStatus(Enum):
     QUEUED = "queued"
     RUNNING = "running"
+    BLOCKED = "blocked"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -610,6 +611,8 @@ class Task:
     completed_at: Optional[float] = None
     channel: str = ""
     thread_ts: str = ""
+    created_by: str = ""
+    retries: int = 0
 
     @property
     def duration(self) -> Optional[float]:
@@ -623,27 +626,23 @@ class Task:
 
 
 class TaskManager:
-    """Manages concurrent task execution with progress reporting."""
+    """Manages concurrent task execution with progress reporting and persistence."""
 
     def __init__(self):
         self.tasks: Dict[str, Task] = {}
         self.active_count = 0
         self._lock = asyncio.Lock()
-        # Track task groups (multiple tasks from one user message)
-        self.groups: Dict[str, List[str]] = {}  # group_id -> [task_ids]
+        self.groups: Dict[str, List[str]] = {}
 
     def create_task(self, tool: str, host: str, cmd: str,
                     channel: str = "", thread_ts: str = "",
-                    group_id: Optional[str] = None) -> Task:
+                    group_id: Optional[str] = None,
+                    created_by: str = "") -> Task:
         """Create and register a new task."""
         task_id = uuid.uuid4().hex[:8]
         task = Task(
-            task_id=task_id,
-            tool=tool,
-            host=host,
-            cmd=cmd,
-            channel=channel,
-            thread_ts=thread_ts,
+            task_id=task_id, tool=tool, host=host, cmd=cmd,
+            channel=channel, thread_ts=thread_ts, created_by=created_by,
         )
         self.tasks[task_id] = task
 
@@ -656,13 +655,18 @@ class TaskManager:
         return task
 
     async def execute_group(self, group_id: str, channel: str, thread_ts: str) -> List[Task]:
-        """Execute all tasks in a group concurrently."""
+        """Execute all tasks in a group concurrently with persistence."""
         task_ids = self.groups.get(group_id, [])
         if not task_ids:
             return []
 
         tasks = [self.tasks[tid] for tid in task_ids]
         total = len(tasks)
+
+        # Persist task creation
+        for t in tasks:
+            await memory.log_task(t.task_id, channel, thread_ts,
+                                  f"{t.tool}@{t.host}: {t.cmd[:200]}", "queued")
 
         # Post initial status
         task_list = "\n".join(
@@ -685,34 +689,80 @@ class TaskManager:
                 tasks[i].status = TaskStatus.FAILED
                 tasks[i].error = str(result)
                 tasks[i].completed_at = time.time()
+                await memory.update_task(tasks[i].task_id, "failed", str(result))
 
         return tasks
 
     async def _run_task(self, task: Task) -> Task:
-        """Execute a single task."""
+        """Execute a single task with persistence."""
         task.status = TaskStatus.RUNNING
         task.started_at = time.time()
+        await memory.update_task(task.task_id, "running")
 
         try:
             result = await tool_executor.execute(task.tool, task.host, task.cmd)
             task.result = result
             task.status = TaskStatus.COMPLETED
+            summary = (result[:200] + "...") if result and len(result) > 200 else result
+            await memory.update_task(task.task_id, "completed", summary)
         except Exception as e:
             task.error = str(e)
             task.status = TaskStatus.FAILED
             log.error(f"Task {task.short_id} failed: {e}")
+            await memory.update_task(task.task_id, "failed", str(e)[:200])
         finally:
             task.completed_at = time.time()
 
         return task
 
-    def cancel_task(self, task_id: str) -> bool:
-        """Cancel a queued task."""
+    async def retry_task(self, task_id: str, channel: str, thread_ts: str) -> Optional[Task]:
+        """Retry a failed or cancelled task."""
+        # Find task by full or short ID
         task = self.tasks.get(task_id)
-        if task and task.status == TaskStatus.QUEUED:
+        if not task:
+            for t in self.tasks.values():
+                if t.short_id == task_id or t.task_id.startswith(task_id):
+                    task = t
+                    break
+        if not task:
+            return None
+        if task.status not in (TaskStatus.FAILED, TaskStatus.CANCELLED):
+            return None
+
+        # Create a new retry task
+        new_task = self.create_task(
+            task.tool, task.host, task.cmd, channel, thread_ts,
+            created_by=task.created_by,
+        )
+        new_task.retries = task.retries + 1
+        group_id = uuid.uuid4().hex[:8]
+        self.groups[group_id] = [new_task.task_id]
+        await self.execute_group(group_id, channel, thread_ts)
+        return new_task
+
+    def cancel_task(self, task_id: str) -> Optional[Task]:
+        """Cancel a queued or running task. Returns the task if cancelled."""
+        task = self.tasks.get(task_id)
+        if not task:
+            for t in self.tasks.values():
+                if t.short_id == task_id or t.task_id.startswith(task_id):
+                    task = t
+                    break
+        if task and task.status in (TaskStatus.QUEUED, TaskStatus.RUNNING):
             task.status = TaskStatus.CANCELLED
-            return True
-        return False
+            task.completed_at = time.time()
+            return task
+        return None
+
+    def get_task(self, task_id: str) -> Optional[Task]:
+        """Find task by full or short ID."""
+        task = self.tasks.get(task_id)
+        if task:
+            return task
+        for t in self.tasks.values():
+            if t.short_id == task_id or t.task_id.startswith(task_id):
+                return t
+        return None
 
     def get_active_tasks(self) -> List[Task]:
         return [t for t in self.tasks.values() if t.status == TaskStatus.RUNNING]
@@ -733,7 +783,6 @@ class TaskManager:
         ]
         for tid in old_ids:
             del self.tasks[tid]
-        # Clean group refs
         for gid in list(self.groups.keys()):
             self.groups[gid] = [
                 tid for tid in self.groups[gid] if tid in self.tasks
@@ -1386,6 +1435,9 @@ async def describe_image_with_vision(image_url: str, user_text: str = "") -> Opt
 SLASH_COMMANDS = {
     "status": "Show system status across all VMs",
     "tasks": "Show current and recent tasks",
+    "task": "Show task detail (/task <id>)",
+    "cancel": "Cancel a task (/cancel <id>)",
+    "retry": "Retry a failed task (/retry <id>)",
     "vms": "List all VMs with connectivity",
     "docker": "List Docker containers on swarm-mainframe",
     "gpu": "Show GPU status on swarm-gpu",
@@ -1504,22 +1556,82 @@ async def handle_slash_command(cmd: str, args: str, channel: str, thread_ts: str
         return True
 
     if cmd == "tasks":
-        recent = task_manager.get_recent_tasks(10)
+        recent = task_manager.get_recent_tasks(15)
         if not recent:
             await post_message(":clipboard: No tasks yet.", channel, thread_ts)
             return True
-        lines = [":clipboard: *Recent Tasks*\n"]
+        status_icons = {
+            TaskStatus.COMPLETED: ":white_check_mark:",
+            TaskStatus.FAILED: ":x:",
+            TaskStatus.RUNNING: ":hourglass_flowing_sand:",
+            TaskStatus.QUEUED: ":inbox_tray:",
+            TaskStatus.CANCELLED: ":no_entry_sign:",
+            TaskStatus.BLOCKED: ":no_entry:",
+        }
+        active = [t for t in recent if t.status == TaskStatus.RUNNING]
+        lines = [f":clipboard: *Tasks* ({len(active)} active, {len(recent)} recent)\n"]
         for t in recent:
-            icon = {
-                TaskStatus.COMPLETED: ":white_check_mark:",
-                TaskStatus.FAILED: ":x:",
-                TaskStatus.RUNNING: ":hourglass_flowing_sand:",
-                TaskStatus.QUEUED: ":inbox_tray:",
-                TaskStatus.CANCELLED: ":no_entry_sign:",
-            }.get(t.status, ":grey_question:")
+            icon = status_icons.get(t.status, ":grey_question:")
             dur = f" ({t.duration}s)" if t.duration else ""
-            lines.append(f"{icon} `{t.short_id}` {t.tool}@{t.host}: `{t.cmd[:40]}`{dur}")
+            retry = f" [retry #{t.retries}]" if t.retries > 0 else ""
+            lines.append(f"{icon} `{t.short_id}` {t.tool}@{t.host}: `{t.cmd[:40]}`{dur}{retry}")
+        lines.append(f"\n_Use_ `/task <id>` _for details,_ `/cancel <id>` _to cancel,_ `/retry <id>` _to retry_")
         await post_message("\n".join(lines), channel, thread_ts)
+        return True
+
+    if cmd == "task":
+        tid = args.strip()
+        if not tid:
+            await post_message(":warning: Usage: `/task <id>`", channel, thread_ts)
+            return True
+        task = task_manager.get_task(tid)
+        if not task:
+            await post_message(f":warning: Task `{tid}` not found.", channel, thread_ts)
+            return True
+        lines = [f":mag: *Task {task.short_id}*\n"]
+        lines.append(f"*Status:* {task.status.value}")
+        lines.append(f"*Tool:* `{task.tool}@{task.host}`")
+        lines.append(f"*Command:* `{task.cmd[:200]}`")
+        if task.created_by:
+            lines.append(f"*Created by:* <@{task.created_by}>")
+        if task.retries > 0:
+            lines.append(f"*Retries:* {task.retries}")
+        if task.duration:
+            lines.append(f"*Duration:* {task.duration}s")
+        if task.result:
+            result_preview = task.result[:500]
+            lines.append(f"*Result:*\n```{result_preview}```")
+        if task.error:
+            lines.append(f"*Error:* `{task.error[:300]}`")
+        await post_message("\n".join(lines), channel, thread_ts)
+        return True
+
+    if cmd == "cancel":
+        tid = args.strip()
+        if not tid:
+            await post_message(":warning: Usage: `/cancel <id>`", channel, thread_ts)
+            return True
+        task = task_manager.cancel_task(tid)
+        if task:
+            await memory.update_task(task.task_id, "cancelled")
+            await post_message(f":no_entry_sign: Task `{task.short_id}` cancelled.", channel, thread_ts)
+        else:
+            await post_message(f":warning: Task `{tid}` not found or can't be cancelled.", channel, thread_ts)
+        return True
+
+    if cmd == "retry":
+        tid = args.strip()
+        if not tid:
+            await post_message(":warning: Usage: `/retry <id>`", channel, thread_ts)
+            return True
+        new_task = await task_manager.retry_task(tid, channel, thread_ts)
+        if new_task:
+            await post_message(
+                f":arrows_counterclockwise: Retried as task `{new_task.short_id}` (retry #{new_task.retries})",
+                channel, thread_ts,
+            )
+        else:
+            await post_message(f":warning: Task `{tid}` not found or can't be retried (only failed/cancelled tasks).", channel, thread_ts)
         return True
 
     if cmd == "vms":
