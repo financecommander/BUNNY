@@ -299,6 +299,55 @@ def _init_db():
                 recommended_action TEXT,
                 created_at REAL NOT NULL
             );
+
+            -- Learning Planner
+            CREATE TABLE IF NOT EXISTS plan_outcomes (
+                plan_id TEXT PRIMARY KEY,
+                goal_type TEXT,
+                success INTEGER,
+                total_duration REAL,
+                retries INTEGER DEFAULT 0,
+                escalations INTEGER DEFAULT 0,
+                rollback_triggered INTEGER DEFAULT 0,
+                final_summary TEXT,
+                completed_at REAL
+            );
+
+            -- Performance-Aware Routing
+            CREATE TABLE IF NOT EXISTS routing_performance (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                route_type TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                success_rate REAL DEFAULT 1.0,
+                avg_latency REAL DEFAULT 0,
+                error_rate REAL DEFAULT 0,
+                request_count INTEGER DEFAULT 0,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_routing_target ON routing_performance(target_id);
+
+            CREATE TABLE IF NOT EXISTS routing_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT,
+                route_reason TEXT,
+                selected_target TEXT,
+                alternatives_json TEXT,
+                confidence REAL,
+                created_at REAL NOT NULL
+            );
+
+            -- Execution Simulation
+            CREATE TABLE IF NOT EXISTS simulations (
+                simulation_id TEXT PRIMARY KEY,
+                plan_id TEXT,
+                scenario_type TEXT,
+                inputs_json TEXT,
+                predicted_outcomes_json TEXT,
+                risk_score REAL,
+                recommended_action TEXT,
+                created_at REAL NOT NULL
+            );
         """)
         conn.commit()
         log.info(f"Persistent memory initialized: {DB_PATH}")
@@ -2594,6 +2643,328 @@ self_healer = SelfHealingLayer()
 
 
 # ---------------------------------------------------------------------------
+# Performance-Aware Routing
+# ---------------------------------------------------------------------------
+
+ROUTING_MODES = ["BALANCED", "LOW_LATENCY", "LOW_COST", "HIGH_RELIABILITY"]
+_routing_mode = "BALANCED"
+
+
+class PerformanceRouter:
+    """Routes tasks based on live and historical performance."""
+
+    async def record_result(self, target_id: str, target_type: str,
+                            route_type: str, success: bool, latency: float):
+        """Record a routing result for performance tracking."""
+        def _update():
+            conn = _db_connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM routing_performance WHERE target_id = ? AND route_type = ?",
+                    (target_id, route_type),
+                ).fetchone()
+                now = time.time()
+                if row:
+                    count = row["request_count"] + 1
+                    sr = (row["success_rate"] * row["request_count"] + (1 if success else 0)) / count
+                    al = (row["avg_latency"] * row["request_count"] + latency) / count
+                    er = (row["error_rate"] * row["request_count"] + (0 if success else 1)) / count
+                    conn.execute(
+                        "UPDATE routing_performance SET success_rate=?, avg_latency=?, "
+                        "error_rate=?, request_count=?, updated_at=? "
+                        "WHERE target_id=? AND route_type=?",
+                        (sr, al, er, count, now, target_id, route_type),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO routing_performance "
+                        "(route_type, target_type, target_id, success_rate, avg_latency, "
+                        "error_rate, request_count, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+                        (route_type, target_type, target_id,
+                         1.0 if success else 0.0, latency,
+                         0.0 if success else 1.0, now),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_update)
+
+    async def get_performance(self, target_id: str = None) -> List[Dict]:
+        """Get performance stats."""
+        def _query():
+            conn = _db_connect()
+            try:
+                if target_id:
+                    rows = conn.execute(
+                        "SELECT * FROM routing_performance WHERE target_id = ?", (target_id,)
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM routing_performance ORDER BY updated_at DESC"
+                    ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_query)
+
+    async def select_best_target(self, candidates: List[str], route_type: str = "ai") -> str:
+        """Select the best target based on current routing mode and performance."""
+        global _routing_mode
+        if not candidates:
+            return ""
+
+        perf_data = await self.get_performance()
+        scores = {}
+
+        for target in candidates:
+            target_perf = next((p for p in perf_data if p["target_id"] == target), None)
+            if not target_perf:
+                scores[target] = 0.5  # Unknown = neutral
+                continue
+
+            if _routing_mode == "LOW_LATENCY":
+                scores[target] = 1.0 / max(0.001, target_perf["avg_latency"])
+            elif _routing_mode == "HIGH_RELIABILITY":
+                scores[target] = target_perf["success_rate"]
+            elif _routing_mode == "LOW_COST":
+                scores[target] = target_perf["success_rate"] / max(0.001, target_perf["avg_latency"])
+            else:  # BALANCED
+                scores[target] = (
+                    target_perf["success_rate"] * 0.5 +
+                    (1.0 / max(0.001, target_perf["avg_latency"])) * 0.3 +
+                    (1.0 - target_perf["error_rate"]) * 0.2
+                )
+
+        best = max(scores, key=scores.get) if scores else candidates[0]
+        return best
+
+
+perf_router = PerformanceRouter()
+
+
+# ---------------------------------------------------------------------------
+# Execution Simulation
+# ---------------------------------------------------------------------------
+
+class SimulationEngine:
+    """Pre-execution simulation to estimate risk and impact."""
+
+    async def simulate_plan(self, plan_id: str) -> Dict:
+        """Simulate executing a plan and estimate risk."""
+        plan_data = await planner.get_plan(plan_id)
+        if not plan_data:
+            return {"error": "Plan not found"}
+
+        steps = plan_data["steps"]
+        sim_id = f"sim-{uuid.uuid4().hex[:8]}"
+        risk_score = 0
+        predicted_outcomes = []
+
+        for step in steps:
+            title = step["title"].lower()
+            desc = step.get("description", "").lower()
+
+            # Estimate risk per step
+            step_risk = 0.1
+            if any(w in title + desc for w in ["restart", "stop", "kill"]):
+                step_risk = 0.4
+            elif any(w in title + desc for w in ["delete", "remove", "drop"]):
+                step_risk = 0.7
+            elif any(w in title + desc for w in ["deploy", "install", "upgrade"]):
+                step_risk = 0.5
+            elif any(w in title + desc for w in ["check", "status", "verify", "test"]):
+                step_risk = 0.05
+
+            predicted_outcomes.append({
+                "step": step["title"],
+                "predicted_success": 1.0 - step_risk,
+                "risk": step_risk,
+            })
+            risk_score = max(risk_score, step_risk)
+
+        # Overall risk
+        avg_risk = sum(p["risk"] for p in predicted_outcomes) / max(1, len(predicted_outcomes))
+        risk_level = "CRITICAL" if avg_risk > 0.6 else "HIGH" if avg_risk > 0.4 else "MODERATE" if avg_risk > 0.2 else "LOW"
+
+        result = {
+            "simulation_id": sim_id,
+            "plan_id": plan_id,
+            "risk_score": round(avg_risk, 2),
+            "risk_level": risk_level,
+            "steps": predicted_outcomes,
+            "recommended_action": "proceed" if risk_level in ("LOW", "MODERATE") else "review_required",
+        }
+
+        # Store
+        def _store():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO simulations "
+                    "(simulation_id, plan_id, scenario_type, inputs_json, "
+                    "predicted_outcomes_json, risk_score, recommended_action, created_at) "
+                    "VALUES (?, ?, 'plan', ?, ?, ?, ?, ?)",
+                    (sim_id, plan_id, json.dumps({"steps": len(steps)}),
+                     json.dumps(predicted_outcomes), avg_risk,
+                     result["recommended_action"], time.time()),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_store)
+        return result
+
+    async def simulate_action(self, action_type: str, target: str = "") -> Dict:
+        """Simulate a single action."""
+        sim_id = f"sim-{uuid.uuid4().hex[:8]}"
+        risk_map = {
+            "restart_service": 0.3,
+            "restart_runtime": 0.3,
+            "deploy": 0.5,
+            "cleanup_temp_files": 0.1,
+            "fallback_provider": 0.1,
+            "reload_runtime": 0.25,
+            "delete": 0.8,
+            "stop": 0.6,
+        }
+        risk = risk_map.get(action_type, 0.3)
+        risk_level = "CRITICAL" if risk > 0.6 else "HIGH" if risk > 0.4 else "MODERATE" if risk > 0.2 else "LOW"
+
+        result = {
+            "simulation_id": sim_id,
+            "action_type": action_type,
+            "target": target,
+            "risk_score": risk,
+            "risk_level": risk_level,
+            "recommended_action": "proceed" if risk_level in ("LOW", "MODERATE") else "review_required",
+        }
+
+        def _store():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO simulations "
+                    "(simulation_id, scenario_type, inputs_json, risk_score, "
+                    "recommended_action, created_at) "
+                    "VALUES (?, 'action', ?, ?, ?, ?)",
+                    (sim_id, json.dumps({"action": action_type, "target": target}),
+                     risk, result["recommended_action"], time.time()),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_store)
+        return result
+
+
+simulator = SimulationEngine()
+
+
+# ---------------------------------------------------------------------------
+# Dashboard API
+# ---------------------------------------------------------------------------
+
+async def dashboard_overview(request: web.Request) -> web.Response:
+    """Dashboard overview endpoint."""
+    try:
+        mem_stats = await memory.stats()
+        active_tasks = task_manager.get_active_tasks()
+        alerts = await monitor.get_alerts(active_only=True)
+        plans = await planner.get_recent_plans(5)
+        agents = await agent_coordinator.get_agents()
+        repairs = await self_healer.get_repair_history(5)
+
+        return web.json_response({
+            "system": "bunny-alpha",
+            "status": "healthy",
+            "memory": {
+                "total_messages": mem_stats["total_messages"],
+                "channels": len(mem_stats["channels"]),
+                "db_size_kb": round(mem_stats["db_size_bytes"] / 1024, 1),
+            },
+            "tasks": {
+                "active": len(active_tasks),
+                "recent": len(task_manager.get_recent_tasks(20)),
+            },
+            "alerts": {"active": len(alerts)},
+            "plans": {"recent": len(plans)},
+            "agents": {"count": len(agents)},
+            "repairs": {"recent": len(repairs)},
+            "routing_mode": _routing_mode,
+            "self_healing": self_healer.enabled,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_tasks(request: web.Request) -> web.Response:
+    """Dashboard tasks endpoint."""
+    recent = task_manager.get_recent_tasks(50)
+    return web.json_response({
+        "tasks": [
+            {
+                "task_id": t.task_id,
+                "tool": t.tool,
+                "host": t.host,
+                "cmd": t.cmd[:100],
+                "status": t.status.value,
+                "duration": t.duration,
+                "created_at": t.created_at,
+            }
+            for t in recent
+        ]
+    })
+
+
+async def dashboard_monitoring(request: web.Request) -> web.Response:
+    """Dashboard monitoring endpoint."""
+    checks = await monitor.get_checks(enabled_only=False)
+    alerts = await monitor.get_alerts(active_only=False, limit=50)
+    return web.json_response({
+        "checks": checks,
+        "alerts": alerts,
+    })
+
+
+async def dashboard_plans(request: web.Request) -> web.Response:
+    """Dashboard plans endpoint."""
+    plans = await planner.get_recent_plans(20)
+    result = []
+    for p in plans:
+        plan_data = await planner.get_plan(p["plan_id"])
+        if plan_data:
+            result.append(plan_data)
+    return web.json_response({"plans": result})
+
+
+async def dashboard_routing(request: web.Request) -> web.Response:
+    """Dashboard routing endpoint."""
+    perf = await perf_router.get_performance()
+    return web.json_response({
+        "mode": _routing_mode,
+        "performance": perf,
+    })
+
+
+async def dashboard_graph(request: web.Request) -> web.Response:
+    """Dashboard graph endpoint."""
+    def _query():
+        conn = _db_connect()
+        try:
+            entities = [dict(r) for r in conn.execute("SELECT * FROM graph_entities").fetchall()]
+            edges = [dict(r) for r in conn.execute("SELECT * FROM graph_edges").fetchall()]
+            events = [dict(r) for r in conn.execute(
+                "SELECT * FROM graph_events ORDER BY created_at DESC LIMIT 50"
+            ).fetchall()]
+            return {"entities": entities, "edges": edges, "recent_events": events}
+        finally:
+            conn.close()
+    data = await asyncio.to_thread(_query)
+    return web.json_response(data)
+
+
+# ---------------------------------------------------------------------------
 # AI Model Providers
 # ---------------------------------------------------------------------------
 
@@ -3068,6 +3439,9 @@ SLASH_COMMANDS = {
     "delegate": "Delegate task to sub-agents (/delegate <task>)",
     "predict": "Predictive monitoring (/predict health|risk|<vm>)",
     "heal": "Self-healing status/control (/heal status|history|enable|disable)",
+    "route": "Routing status/mode (/route status|mode <mode>)",
+    "simulate": "Simulate plan/action (/simulate <plan_id>|action <type>)",
+    "dashboard": "Show dashboard API endpoints",
     "memory": "Show persistent memory stats (/memory search <query>)",
     "forget": "Clear memory (/forget, /forget all, /forget thread, /forget channel)",
     "pref": "Set/get preferences (/pref key value, /pref key, /pref)",
@@ -3771,6 +4145,89 @@ async def handle_slash_command(cmd: str, args: str, channel: str, thread_ts: str
             )
         return True
 
+    # -- Routing commands --
+    if cmd == "route":
+        global _routing_mode
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "status"
+
+        if subcmd == "status":
+            perf = await perf_router.get_performance()
+            lines = [f":arrows_counterclockwise: *Routing Mode: {_routing_mode}*\n"]
+            if perf:
+                for p in perf[:15]:
+                    sr = f"{p['success_rate']:.0%}"
+                    lines.append(f"\u2022 `{p['target_id']}` ({p['target_type']}) — "
+                                 f"success: {sr}, latency: {p['avg_latency']:.1f}s, "
+                                 f"requests: {p['request_count']}")
+            else:
+                lines.append("No routing data yet.")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "mode" and len(sub) > 1:
+            mode = sub[1].strip().upper()
+            if mode in ROUTING_MODES:
+                _routing_mode = mode
+                await post_message(f":white_check_mark: Routing mode set to *{mode}*", channel, thread_ts)
+            else:
+                await post_message(f":warning: Unknown mode. Options: {', '.join(ROUTING_MODES)}", channel, thread_ts)
+
+        else:
+            await post_message(
+                ":arrows_counterclockwise: */route* commands: `status`, `mode <BALANCED|LOW_LATENCY|LOW_COST|HIGH_RELIABILITY>`",
+                channel, thread_ts,
+            )
+        return True
+
+    # -- Simulation commands --
+    if cmd == "simulate":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else ""
+
+        if subcmd.startswith("plan-") or subcmd.startswith("plan_"):
+            result = await simulator.simulate_plan(subcmd)
+            if "error" in result:
+                await post_message(f":warning: {result['error']}", channel, thread_ts)
+            else:
+                icon = ":green_circle:" if result["risk_level"] == "LOW" else ":orange_circle:" if result["risk_level"] in ("MODERATE", "HIGH") else ":red_circle:"
+                lines = [f"{icon} *Simulation `{result['simulation_id']}`*"]
+                lines.append(f"Plan: `{result['plan_id']}`")
+                lines.append(f"Risk: *{result['risk_level']}* ({result['risk_score']:.0%})")
+                lines.append(f"Recommendation: {result['recommended_action']}")
+                for s in result.get("steps", [])[:5]:
+                    lines.append(f"  \u2022 {s['step']}: risk {s['risk']:.0%}")
+                await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "action" and len(sub) > 1:
+            result = await simulator.simulate_action(sub[1].strip())
+            icon = ":green_circle:" if result["risk_level"] == "LOW" else ":red_circle:"
+            await post_message(
+                f"{icon} *Simulate `{result['action_type']}`*: risk *{result['risk_level']}* "
+                f"({result['risk_score']:.0%}) — {result['recommended_action']}",
+                channel, thread_ts,
+            )
+        else:
+            await post_message(
+                ":test_tube: */simulate* commands: `/simulate <plan_id>`, `/simulate action <type>`",
+                channel, thread_ts,
+            )
+        return True
+
+    # -- Dashboard command --
+    if cmd == "dashboard":
+        port_url = f"http://localhost:{PORT}"
+        lines = [":bar_chart: *Operator Dashboard*\n"]
+        lines.append(f"API endpoints available at `{port_url}`:")
+        lines.append(f"\u2022 `{port_url}/dashboard/overview` — System overview")
+        lines.append(f"\u2022 `{port_url}/dashboard/tasks` — Task history")
+        lines.append(f"\u2022 `{port_url}/dashboard/monitoring` — Checks & alerts")
+        lines.append(f"\u2022 `{port_url}/dashboard/plans` — Plan history")
+        lines.append(f"\u2022 `{port_url}/dashboard/routing` — Routing performance")
+        lines.append(f"\u2022 `{port_url}/dashboard/graph` — Knowledge graph")
+        lines.append(f"\n_Access via VM IP: `{VMS.get('swarm-mainframe', {}).get('ip', '10.142.0.4')}:{PORT}`_")
+        await post_message("\n".join(lines), channel, thread_ts)
+        return True
+
     return False
 
 
@@ -4232,6 +4689,12 @@ def main():
     app.router.add_post("/slack/events", handle_events)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/tasks", handle_tasks_api)
+    app.router.add_get("/dashboard/overview", dashboard_overview)
+    app.router.add_get("/dashboard/tasks", dashboard_tasks)
+    app.router.add_get("/dashboard/monitoring", dashboard_monitoring)
+    app.router.add_get("/dashboard/plans", dashboard_plans)
+    app.router.add_get("/dashboard/routing", dashboard_routing)
+    app.router.add_get("/dashboard/graph", dashboard_graph)
 
     log.info("Starting Bunny Alpha v2.0 \u2014 Multi-task Infrastructure Operator")
     web.run_app(app, host="0.0.0.0", port=PORT)
