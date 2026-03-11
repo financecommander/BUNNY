@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bunny Alpha v3.4 — Autonomous Operations Platform
+Bunny Alpha v3.5 — Autonomous Operations Platform
 
 Standalone Slack assistant with real infrastructure execution.
 Task queue, concurrent execution, progress reporting.
@@ -1492,6 +1492,218 @@ def _init_db():
                 check_results_json TEXT,
                 passed INTEGER DEFAULT 0,
                 checked_at REAL NOT NULL
+            );
+
+            -- Financial Engineering & Structured Instruments
+            CREATE TABLE IF NOT EXISTS fin_instruments (
+                instrument_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                instrument_type TEXT NOT NULL,
+                asset_class TEXT NOT NULL,
+                status TEXT DEFAULT 'draft',
+                created_by TEXT,
+                parameters_json TEXT,
+                risk_profile TEXT DEFAULT 'moderate',
+                regulatory_flags_json TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS fin_instrument_designs (
+                design_id TEXT PRIMARY KEY,
+                instrument_id TEXT NOT NULL,
+                design_type TEXT NOT NULL,
+                structure_json TEXT NOT NULL,
+                optimization_target TEXT,
+                constraints_json TEXT,
+                score REAL DEFAULT 0.0,
+                status TEXT DEFAULT 'proposed',
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS fin_asset_pools (
+                pool_id TEXT PRIMARY KEY,
+                instrument_id TEXT NOT NULL,
+                pool_name TEXT NOT NULL,
+                asset_type TEXT NOT NULL,
+                total_balance REAL DEFAULT 0.0,
+                num_assets INTEGER DEFAULT 0,
+                avg_rate REAL DEFAULT 0.0,
+                avg_term_months INTEGER DEFAULT 0,
+                default_rate REAL DEFAULT 0.0,
+                prepayment_rate REAL DEFAULT 0.0,
+                concentration_json TEXT,
+                stats_json TEXT,
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS fin_waterfall_rules (
+                rule_id TEXT PRIMARY KEY,
+                instrument_id TEXT NOT NULL,
+                priority INTEGER NOT NULL,
+                rule_name TEXT NOT NULL,
+                rule_type TEXT NOT NULL,
+                target_tranche TEXT,
+                condition_json TEXT,
+                action_json TEXT NOT NULL,
+                active INTEGER DEFAULT 1,
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS fin_tranches (
+                tranche_id TEXT PRIMARY KEY,
+                instrument_id TEXT NOT NULL,
+                tranche_name TEXT NOT NULL,
+                seniority INTEGER NOT NULL,
+                notional REAL NOT NULL,
+                coupon_rate REAL DEFAULT 0.0,
+                coupon_type TEXT DEFAULT 'fixed',
+                credit_enhancement REAL DEFAULT 0.0,
+                rating TEXT,
+                subordination_pct REAL DEFAULT 0.0,
+                expected_loss REAL DEFAULT 0.0,
+                wal_years REAL DEFAULT 0.0,
+                spread_bps REAL DEFAULT 0.0,
+                status TEXT DEFAULT 'active',
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS fin_cashflow_projections (
+                projection_id TEXT PRIMARY KEY,
+                instrument_id TEXT NOT NULL,
+                scenario_name TEXT DEFAULT 'base',
+                period INTEGER NOT NULL,
+                period_date TEXT NOT NULL,
+                principal_inflow REAL DEFAULT 0.0,
+                interest_inflow REAL DEFAULT 0.0,
+                defaults REAL DEFAULT 0.0,
+                recoveries REAL DEFAULT 0.0,
+                prepayments REAL DEFAULT 0.0,
+                fees REAL DEFAULT 0.0,
+                net_cashflow REAL DEFAULT 0.0,
+                tranche_payments_json TEXT,
+                residual REAL DEFAULT 0.0,
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS fin_stress_scenarios (
+                scenario_id TEXT PRIMARY KEY,
+                instrument_id TEXT NOT NULL,
+                scenario_name TEXT NOT NULL,
+                scenario_type TEXT NOT NULL,
+                parameters_json TEXT NOT NULL,
+                results_json TEXT,
+                impact_summary TEXT,
+                passes_threshold INTEGER DEFAULT 1,
+                severity TEXT DEFAULT 'moderate',
+                run_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS fin_covenants (
+                covenant_id TEXT PRIMARY KEY,
+                instrument_id TEXT NOT NULL,
+                covenant_name TEXT NOT NULL,
+                covenant_type TEXT NOT NULL,
+                metric TEXT NOT NULL,
+                threshold REAL NOT NULL,
+                comparison TEXT DEFAULT 'gte',
+                cure_period_days INTEGER DEFAULT 30,
+                consequence TEXT DEFAULT 'notification',
+                current_value REAL,
+                in_compliance INTEGER DEFAULT 1,
+                last_checked REAL,
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS fin_pricing_results (
+                pricing_id TEXT PRIMARY KEY,
+                instrument_id TEXT NOT NULL,
+                tranche_id TEXT,
+                pricing_method TEXT NOT NULL,
+                discount_rate REAL,
+                spread_bps REAL,
+                fair_value REAL,
+                yield_pct REAL,
+                duration REAL,
+                convexity REAL,
+                oas_bps REAL,
+                market_comparables_json TEXT,
+                priced_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS fin_legal_flags (
+                flag_id TEXT PRIMARY KEY,
+                instrument_id TEXT NOT NULL,
+                flag_type TEXT NOT NULL,
+                jurisdiction TEXT DEFAULT 'US',
+                regulation TEXT NOT NULL,
+                description TEXT NOT NULL,
+                severity TEXT DEFAULT 'warning',
+                recommendation TEXT,
+                resolved INTEGER DEFAULT 0,
+                flagged_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS fin_term_sheets (
+                sheet_id TEXT PRIMARY KEY,
+                instrument_id TEXT NOT NULL,
+                version INTEGER DEFAULT 1,
+                title TEXT NOT NULL,
+                sections_json TEXT NOT NULL,
+                key_terms_json TEXT,
+                status TEXT DEFAULT 'draft',
+                generated_at REAL NOT NULL,
+                approved_by TEXT,
+                approved_at REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS fin_negotiations (
+                negotiation_id TEXT PRIMARY KEY,
+                instrument_id TEXT NOT NULL,
+                counterparty TEXT NOT NULL,
+                round_number INTEGER DEFAULT 1,
+                proposed_terms_json TEXT,
+                counterproposal_json TEXT,
+                concessions_json TEXT,
+                status TEXT DEFAULT 'active',
+                leverage_score REAL DEFAULT 0.5,
+                notes TEXT,
+                created_at REAL NOT NULL,
+                resolved_at REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS fin_lifecycle_events (
+                event_id TEXT PRIMARY KEY,
+                instrument_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                event_data_json TEXT,
+                impact_assessment TEXT,
+                action_taken TEXT,
+                triggered_by TEXT DEFAULT 'system',
+                event_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS fin_approvals (
+                approval_id TEXT PRIMARY KEY,
+                instrument_id TEXT NOT NULL,
+                approval_type TEXT NOT NULL,
+                requested_by TEXT NOT NULL,
+                approver TEXT,
+                status TEXT DEFAULT 'pending',
+                risk_assessment_json TEXT,
+                comments TEXT,
+                requested_at REAL NOT NULL,
+                decided_at REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS fin_audit_trail (
+                audit_id TEXT PRIMARY KEY,
+                instrument_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                details_json TEXT,
+                compliance_note TEXT,
+                recorded_at REAL NOT NULL
             );
         """)
         conn.commit()
@@ -9269,6 +9481,1196 @@ vm_security = VMSecurityBaseline()
 
 
 # ---------------------------------------------------------------------------
+# Financial Engineering & Structured Instruments Layer
+# ---------------------------------------------------------------------------
+
+class InstrumentIntake:
+    """Module 1: Instrument creation and intake management."""
+
+    async def create_instrument(self, name: str, instrument_type: str, asset_class: str,
+                                parameters: Dict = None, risk_profile: str = "moderate",
+                                created_by: str = "system") -> Dict:
+        def _create():
+            conn = _db_connect()
+            try:
+                iid = f"inst-{uuid.uuid4().hex[:12]}"
+                now = time.time()
+                conn.execute(
+                    "INSERT INTO fin_instruments (instrument_id, name, instrument_type, "
+                    "asset_class, status, created_by, parameters_json, risk_profile, "
+                    "created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (iid, name, instrument_type, asset_class, "draft", created_by,
+                     json.dumps(parameters or {}), risk_profile, now))
+                conn.commit()
+                return {"instrument_id": iid, "name": name, "type": instrument_type,
+                        "asset_class": asset_class, "status": "draft"}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_create)
+
+    async def get_instrument(self, instrument_id: str) -> Optional[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                row = conn.execute("SELECT * FROM fin_instruments WHERE instrument_id=?",
+                                   (instrument_id,)).fetchone()
+                if row:
+                    d = dict(row)
+                    d["parameters"] = json.loads(d.get("parameters_json") or "{}")
+                    d["regulatory_flags"] = json.loads(d.get("regulatory_flags_json") or "[]")
+                    return d
+                return None
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def list_instruments(self, status: str = None, limit: int = 50) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if status:
+                    rows = conn.execute(
+                        "SELECT * FROM fin_instruments WHERE status=? ORDER BY created_at DESC LIMIT ?",
+                        (status, limit)).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM fin_instruments ORDER BY created_at DESC LIMIT ?",
+                        (limit,)).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def update_status(self, instrument_id: str, status: str) -> Dict:
+        def _u():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "UPDATE fin_instruments SET status=?, updated_at=? WHERE instrument_id=?",
+                    (status, time.time(), instrument_id))
+                conn.commit()
+                return {"instrument_id": instrument_id, "status": status}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_u)
+
+    async def get_stats(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                total = conn.execute("SELECT COUNT(*) FROM fin_instruments").fetchone()[0]
+                by_status = conn.execute(
+                    "SELECT status, COUNT(*) as cnt FROM fin_instruments GROUP BY status"
+                ).fetchall()
+                by_type = conn.execute(
+                    "SELECT instrument_type, COUNT(*) as cnt FROM fin_instruments GROUP BY instrument_type"
+                ).fetchall()
+                return {"total": total,
+                        "by_status": {r["status"]: r["cnt"] for r in by_status},
+                        "by_type": {r["instrument_type"]: r["cnt"] for r in by_type}}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class DesignEngine:
+    """Module 2: Instrument structure design and optimization."""
+
+    async def create_design(self, instrument_id: str, design_type: str,
+                            structure: Dict, optimization_target: str = "yield",
+                            constraints: Dict = None) -> Dict:
+        def _create():
+            conn = _db_connect()
+            try:
+                did = f"design-{uuid.uuid4().hex[:12]}"
+                now = time.time()
+                conn.execute(
+                    "INSERT INTO fin_instrument_designs (design_id, instrument_id, design_type, "
+                    "structure_json, optimization_target, constraints_json, status, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (did, instrument_id, design_type, json.dumps(structure),
+                     optimization_target, json.dumps(constraints or {}), "proposed", now))
+                conn.commit()
+                return {"design_id": did, "instrument_id": instrument_id,
+                        "design_type": design_type, "status": "proposed"}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_create)
+
+    async def optimize_structure(self, design_id: str) -> Dict:
+        """Run optimization heuristics on a proposed design."""
+        def _optimize():
+            conn = _db_connect()
+            try:
+                row = conn.execute("SELECT * FROM fin_instrument_designs WHERE design_id=?",
+                                   (design_id,)).fetchone()
+                if not row:
+                    return {"error": "design_not_found"}
+                structure = json.loads(row["structure_json"])
+                target = row["optimization_target"]
+                # Score based on structure completeness and target alignment
+                score = 0.0
+                if "tranches" in structure:
+                    score += 0.3
+                if "waterfall" in structure:
+                    score += 0.25
+                if "collateral" in structure:
+                    score += 0.25
+                if target in ("yield", "risk_adjusted_return"):
+                    score += 0.2
+                elif target == "credit_enhancement":
+                    score += 0.15
+                else:
+                    score += 0.1
+                conn.execute(
+                    "UPDATE fin_instrument_designs SET score=?, status='optimized' WHERE design_id=?",
+                    (round(score, 3), design_id))
+                conn.commit()
+                return {"design_id": design_id, "score": round(score, 3),
+                        "status": "optimized", "target": target}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_optimize)
+
+    async def get_designs(self, instrument_id: str) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM fin_instrument_designs WHERE instrument_id=? "
+                    "ORDER BY score DESC", (instrument_id,)).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class AssetPoolModeling:
+    """Module 3: Asset pool creation and analytics."""
+
+    async def create_pool(self, instrument_id: str, pool_name: str, asset_type: str,
+                          total_balance: float = 0.0, num_assets: int = 0,
+                          avg_rate: float = 0.0, avg_term_months: int = 0,
+                          default_rate: float = 0.0, prepayment_rate: float = 0.0,
+                          concentration: Dict = None) -> Dict:
+        def _create():
+            conn = _db_connect()
+            try:
+                pid = f"pool-{uuid.uuid4().hex[:12]}"
+                now = time.time()
+                conn.execute(
+                    "INSERT INTO fin_asset_pools (pool_id, instrument_id, pool_name, "
+                    "asset_type, total_balance, num_assets, avg_rate, avg_term_months, "
+                    "default_rate, prepayment_rate, concentration_json, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (pid, instrument_id, pool_name, asset_type, total_balance, num_assets,
+                     avg_rate, avg_term_months, default_rate, prepayment_rate,
+                     json.dumps(concentration or {}), now))
+                conn.commit()
+                return {"pool_id": pid, "pool_name": pool_name, "total_balance": total_balance,
+                        "num_assets": num_assets}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_create)
+
+    async def analyze_pool(self, pool_id: str) -> Dict:
+        """Generate pool analytics and concentration metrics."""
+        def _analyze():
+            conn = _db_connect()
+            try:
+                row = conn.execute("SELECT * FROM fin_asset_pools WHERE pool_id=?",
+                                   (pool_id,)).fetchone()
+                if not row:
+                    return {"error": "pool_not_found"}
+                d = dict(row)
+                balance = d["total_balance"]
+                num = d["num_assets"]
+                avg_loan = balance / max(num, 1)
+                expected_loss = balance * d["default_rate"] * 0.6  # 40% recovery assumption
+                weighted_life = d["avg_term_months"] / 12.0
+                stats = {
+                    "avg_loan_size": round(avg_loan, 2),
+                    "expected_annual_loss": round(expected_loss, 2),
+                    "loss_rate_pct": round(d["default_rate"] * 60, 2),
+                    "weighted_avg_life_years": round(weighted_life, 2),
+                    "prepayment_adjusted_life": round(weighted_life * (1 - d["prepayment_rate"]), 2),
+                    "excess_spread_estimate": round(d["avg_rate"] - d["default_rate"] * 0.6, 4),
+                }
+                conn.execute(
+                    "UPDATE fin_asset_pools SET stats_json=? WHERE pool_id=?",
+                    (json.dumps(stats), pool_id))
+                conn.commit()
+                return {"pool_id": pool_id, "analytics": stats}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_analyze)
+
+    async def get_pools(self, instrument_id: str) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM fin_asset_pools WHERE instrument_id=? ORDER BY created_at DESC",
+                    (instrument_id,)).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class WaterfallEngine:
+    """Module 4: Payment waterfall rule construction and execution."""
+
+    async def add_rule(self, instrument_id: str, priority: int, rule_name: str,
+                       rule_type: str, action: Dict, target_tranche: str = None,
+                       condition: Dict = None) -> Dict:
+        def _add():
+            conn = _db_connect()
+            try:
+                rid = f"wf-{uuid.uuid4().hex[:12]}"
+                now = time.time()
+                conn.execute(
+                    "INSERT INTO fin_waterfall_rules (rule_id, instrument_id, priority, "
+                    "rule_name, rule_type, target_tranche, condition_json, action_json, "
+                    "created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (rid, instrument_id, priority, rule_name, rule_type, target_tranche,
+                     json.dumps(condition or {}), json.dumps(action), now))
+                conn.commit()
+                return {"rule_id": rid, "priority": priority, "rule_name": rule_name}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_add)
+
+    async def execute_waterfall(self, instrument_id: str, available_cash: float) -> Dict:
+        """Execute waterfall rules against available cash."""
+        def _execute():
+            conn = _db_connect()
+            try:
+                rules = conn.execute(
+                    "SELECT * FROM fin_waterfall_rules WHERE instrument_id=? AND active=1 "
+                    "ORDER BY priority ASC", (instrument_id,)).fetchall()
+                remaining = available_cash
+                distributions = []
+                for rule in rules:
+                    if remaining <= 0:
+                        break
+                    action = json.loads(rule["action_json"])
+                    alloc_pct = action.get("allocation_pct", 1.0)
+                    min_amount = action.get("min_amount", 0)
+                    max_amount = action.get("max_amount", remaining)
+                    allocated = min(remaining * alloc_pct, max_amount)
+                    allocated = max(allocated, min(min_amount, remaining))
+                    remaining -= allocated
+                    distributions.append({
+                        "rule": rule["rule_name"], "priority": rule["priority"],
+                        "tranche": rule["target_tranche"], "allocated": round(allocated, 2),
+                        "type": rule["rule_type"]
+                    })
+                return {"instrument_id": instrument_id, "available_cash": available_cash,
+                        "distributions": distributions,
+                        "remaining": round(remaining, 2),
+                        "rules_applied": len(distributions)}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_execute)
+
+    async def get_rules(self, instrument_id: str) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM fin_waterfall_rules WHERE instrument_id=? ORDER BY priority ASC",
+                    (instrument_id,)).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class TrancheModeling:
+    """Module 5: Tranche creation, credit enhancement, and rating estimation."""
+
+    async def create_tranche(self, instrument_id: str, tranche_name: str, seniority: int,
+                             notional: float, coupon_rate: float = 0.0,
+                             coupon_type: str = "fixed", credit_enhancement: float = 0.0,
+                             subordination_pct: float = 0.0) -> Dict:
+        def _create():
+            conn = _db_connect()
+            try:
+                tid = f"tranche-{uuid.uuid4().hex[:12]}"
+                now = time.time()
+                # Estimate rating based on subordination and credit enhancement
+                total_protection = subordination_pct + credit_enhancement
+                if total_protection >= 0.30:
+                    rating = "AAA"
+                elif total_protection >= 0.20:
+                    rating = "AA"
+                elif total_protection >= 0.12:
+                    rating = "A"
+                elif total_protection >= 0.06:
+                    rating = "BBB"
+                elif total_protection >= 0.03:
+                    rating = "BB"
+                else:
+                    rating = "NR"
+                conn.execute(
+                    "INSERT INTO fin_tranches (tranche_id, instrument_id, tranche_name, "
+                    "seniority, notional, coupon_rate, coupon_type, credit_enhancement, "
+                    "rating, subordination_pct, status, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (tid, instrument_id, tranche_name, seniority, notional, coupon_rate,
+                     coupon_type, credit_enhancement, rating, subordination_pct, "active", now))
+                conn.commit()
+                return {"tranche_id": tid, "tranche_name": tranche_name,
+                        "seniority": seniority, "notional": notional,
+                        "rating": rating, "coupon_rate": coupon_rate}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_create)
+
+    async def analyze_tranches(self, instrument_id: str) -> Dict:
+        """Calculate WAL, expected loss, and spread estimates for all tranches."""
+        def _analyze():
+            conn = _db_connect()
+            try:
+                tranches = conn.execute(
+                    "SELECT * FROM fin_tranches WHERE instrument_id=? ORDER BY seniority ASC",
+                    (instrument_id,)).fetchall()
+                pool = conn.execute(
+                    "SELECT * FROM fin_asset_pools WHERE instrument_id=? LIMIT 1",
+                    (instrument_id,)).fetchone()
+                if not tranches:
+                    return {"error": "no_tranches"}
+                pool_balance = pool["total_balance"] if pool else 0
+                pool_rate = pool["avg_rate"] if pool else 0.05
+                pool_term = (pool["avg_term_months"] if pool else 60) / 12.0
+                pool_default = pool["default_rate"] if pool else 0.02
+                results = []
+                total_notional = sum(t["notional"] for t in tranches)
+                cumulative_sub = 0.0
+                for t in reversed(list(tranches)):
+                    td = dict(t)
+                    sub_pct = cumulative_sub / max(total_notional, 1)
+                    expected_loss = max(0, pool_default * 0.6 - sub_pct) * td["notional"]
+                    wal = pool_term * (1 - 0.1 * td["seniority"])
+                    spread = max(10, int((pool_default * 10000 - sub_pct * 5000) / max(td["seniority"], 1)))
+                    conn.execute(
+                        "UPDATE fin_tranches SET expected_loss=?, wal_years=?, spread_bps=? "
+                        "WHERE tranche_id=?",
+                        (round(expected_loss, 2), round(wal, 2), spread, td["tranche_id"]))
+                    td["expected_loss"] = round(expected_loss, 2)
+                    td["wal_years"] = round(wal, 2)
+                    td["spread_bps"] = spread
+                    results.append(td)
+                    cumulative_sub += td["notional"]
+                conn.commit()
+                return {"instrument_id": instrument_id, "tranches": list(reversed(results)),
+                        "total_notional": total_notional,
+                        "pool_balance": pool_balance}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_analyze)
+
+    async def get_tranches(self, instrument_id: str) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM fin_tranches WHERE instrument_id=? ORDER BY seniority ASC",
+                    (instrument_id,)).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class CashFlowSimulation:
+    """Module 6: Cash flow projection and scenario modeling."""
+
+    async def project_cashflows(self, instrument_id: str, periods: int = 60,
+                                scenario_name: str = "base",
+                                stress_defaults: float = None,
+                                stress_prepay: float = None) -> Dict:
+        """Generate period-by-period cash flow projections."""
+        def _project():
+            conn = _db_connect()
+            try:
+                pool = conn.execute(
+                    "SELECT * FROM fin_asset_pools WHERE instrument_id=? LIMIT 1",
+                    (instrument_id,)).fetchone()
+                if not pool:
+                    return {"error": "no_asset_pool"}
+                balance = pool["total_balance"]
+                rate = pool["avg_rate"] / 12.0  # Monthly rate
+                default_rate = (stress_defaults or pool["default_rate"]) / 12.0
+                prepay_rate = (stress_prepay or pool["prepayment_rate"]) / 12.0
+                recovery_rate = 0.40
+                now = time.time()
+                projections = []
+                remaining_balance = balance
+                for period in range(1, periods + 1):
+                    if remaining_balance <= 0:
+                        break
+                    interest = remaining_balance * rate
+                    defaults = remaining_balance * default_rate
+                    recoveries = defaults * recovery_rate
+                    prepayments = remaining_balance * prepay_rate
+                    scheduled_principal = remaining_balance / max(periods - period + 1, 1)
+                    total_principal = scheduled_principal + prepayments
+                    fees = remaining_balance * 0.0005  # 6bps annual servicing
+                    net_cf = interest + total_principal + recoveries - defaults - fees
+                    remaining_balance -= (total_principal + defaults - recoveries)
+                    remaining_balance = max(0, remaining_balance)
+                    pid = f"cf-{uuid.uuid4().hex[:10]}"
+                    period_date = f"M+{period}"
+                    conn.execute(
+                        "INSERT INTO fin_cashflow_projections (projection_id, instrument_id, "
+                        "scenario_name, period, period_date, principal_inflow, interest_inflow, "
+                        "defaults, recoveries, prepayments, fees, net_cashflow, residual, "
+                        "created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (pid, instrument_id, scenario_name, period, period_date,
+                         round(total_principal, 2), round(interest, 2), round(defaults, 2),
+                         round(recoveries, 2), round(prepayments, 2), round(fees, 2),
+                         round(net_cf, 2), round(remaining_balance, 2), now))
+                    projections.append({
+                        "period": period, "principal": round(total_principal, 2),
+                        "interest": round(interest, 2), "defaults": round(defaults, 2),
+                        "net_cashflow": round(net_cf, 2),
+                        "remaining_balance": round(remaining_balance, 2)})
+                conn.commit()
+                total_interest = sum(p["interest"] for p in projections)
+                total_defaults = sum(p["defaults"] for p in projections)
+                return {"instrument_id": instrument_id, "scenario": scenario_name,
+                        "periods_projected": len(projections),
+                        "total_interest": round(total_interest, 2),
+                        "total_defaults": round(total_defaults, 2),
+                        "terminal_balance": projections[-1]["remaining_balance"] if projections else 0,
+                        "summary_first_5": projections[:5]}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_project)
+
+    async def get_projections(self, instrument_id: str, scenario: str = "base") -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM fin_cashflow_projections WHERE instrument_id=? "
+                    "AND scenario_name=? ORDER BY period ASC",
+                    (instrument_id, scenario)).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class StressTesting:
+    """Module 7: Multi-scenario stress testing framework."""
+
+    STANDARD_SCENARIOS = [
+        {"name": "base", "type": "baseline", "default_mult": 1.0, "prepay_mult": 1.0,
+         "rate_shock": 0.0, "severity": "none"},
+        {"name": "mild_stress", "type": "economic", "default_mult": 1.5, "prepay_mult": 0.8,
+         "rate_shock": 0.01, "severity": "mild"},
+        {"name": "moderate_stress", "type": "economic", "default_mult": 2.5, "prepay_mult": 0.6,
+         "rate_shock": 0.02, "severity": "moderate"},
+        {"name": "severe_stress", "type": "recession", "default_mult": 4.0, "prepay_mult": 0.3,
+         "rate_shock": 0.03, "severity": "severe"},
+        {"name": "catastrophic", "type": "crisis", "default_mult": 6.0, "prepay_mult": 0.1,
+         "rate_shock": 0.05, "severity": "catastrophic"},
+    ]
+
+    async def run_stress_tests(self, instrument_id: str) -> Dict:
+        """Execute all standard stress scenarios against an instrument."""
+        def _stress():
+            conn = _db_connect()
+            try:
+                pool = conn.execute(
+                    "SELECT * FROM fin_asset_pools WHERE instrument_id=? LIMIT 1",
+                    (instrument_id,)).fetchone()
+                tranches = conn.execute(
+                    "SELECT * FROM fin_tranches WHERE instrument_id=? ORDER BY seniority ASC",
+                    (instrument_id,)).fetchall()
+                if not pool:
+                    return {"error": "no_asset_pool"}
+                now = time.time()
+                results = []
+                base_default = pool["default_rate"]
+                base_prepay = pool["prepayment_rate"]
+                balance = pool["total_balance"]
+                total_notional = sum(t["notional"] for t in tranches) if tranches else balance
+                for scenario in StressTesting.STANDARD_SCENARIOS:
+                    stressed_default = base_default * scenario["default_mult"]
+                    stressed_prepay = base_prepay * scenario["prepay_mult"]
+                    total_losses = balance * stressed_default * 3  # 3yr horizon approx
+                    loss_after_recovery = total_losses * 0.6
+                    # Check which tranches survive
+                    surviving_notional = 0
+                    impaired_tranches = []
+                    cumulative_loss = loss_after_recovery
+                    for t in reversed(list(tranches)):
+                        if cumulative_loss > 0:
+                            tranche_loss = min(cumulative_loss, t["notional"])
+                            cumulative_loss -= tranche_loss
+                            if tranche_loss >= t["notional"] * 0.5:
+                                impaired_tranches.append(t["tranche_name"])
+                            else:
+                                surviving_notional += t["notional"] - tranche_loss
+                        else:
+                            surviving_notional += t["notional"]
+                    passes = len(impaired_tranches) == 0 or scenario["severity"] in ("severe", "catastrophic")
+                    sid = f"stress-{uuid.uuid4().hex[:10]}"
+                    result_data = {
+                        "stressed_default_rate": round(stressed_default, 4),
+                        "stressed_prepay_rate": round(stressed_prepay, 4),
+                        "estimated_losses": round(loss_after_recovery, 2),
+                        "loss_pct_of_pool": round(loss_after_recovery / max(balance, 1) * 100, 2),
+                        "surviving_notional": round(surviving_notional, 2),
+                        "impaired_tranches": impaired_tranches,
+                    }
+                    impact = (f"{scenario['name']}: {result_data['loss_pct_of_pool']}% loss, "
+                              f"{len(impaired_tranches)} tranches impaired")
+                    conn.execute(
+                        "INSERT INTO fin_stress_scenarios (scenario_id, instrument_id, "
+                        "scenario_name, scenario_type, parameters_json, results_json, "
+                        "impact_summary, passes_threshold, severity, run_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (sid, instrument_id, scenario["name"], scenario["type"],
+                         json.dumps(scenario), json.dumps(result_data), impact,
+                         1 if passes else 0, scenario["severity"], now))
+                    results.append({"scenario": scenario["name"], "severity": scenario["severity"],
+                                    "passes": passes, **result_data})
+                conn.commit()
+                return {"instrument_id": instrument_id, "scenarios_run": len(results),
+                        "results": results,
+                        "overall_pass": all(r["passes"] for r in results)}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_stress)
+
+    async def get_results(self, instrument_id: str) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM fin_stress_scenarios WHERE instrument_id=? ORDER BY run_at DESC",
+                    (instrument_id,)).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class CovenantLogic:
+    """Module 8: Covenant definition, monitoring, and breach detection."""
+
+    async def add_covenant(self, instrument_id: str, covenant_name: str,
+                           covenant_type: str, metric: str, threshold: float,
+                           comparison: str = "gte", cure_period_days: int = 30,
+                           consequence: str = "notification") -> Dict:
+        def _add():
+            conn = _db_connect()
+            try:
+                cid = f"cov-{uuid.uuid4().hex[:12]}"
+                now = time.time()
+                conn.execute(
+                    "INSERT INTO fin_covenants (covenant_id, instrument_id, covenant_name, "
+                    "covenant_type, metric, threshold, comparison, cure_period_days, "
+                    "consequence, in_compliance, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (cid, instrument_id, covenant_name, covenant_type, metric, threshold,
+                     comparison, cure_period_days, consequence, 1, now))
+                conn.commit()
+                return {"covenant_id": cid, "covenant_name": covenant_name,
+                        "metric": metric, "threshold": threshold}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_add)
+
+    async def check_covenants(self, instrument_id: str, current_metrics: Dict) -> Dict:
+        """Check all covenants against current metric values."""
+        def _check():
+            conn = _db_connect()
+            try:
+                covenants = conn.execute(
+                    "SELECT * FROM fin_covenants WHERE instrument_id=?",
+                    (instrument_id,)).fetchall()
+                now = time.time()
+                results = []
+                breaches = 0
+                for cov in covenants:
+                    metric_val = current_metrics.get(cov["metric"])
+                    if metric_val is None:
+                        results.append({"covenant": cov["covenant_name"],
+                                        "status": "no_data", "metric": cov["metric"]})
+                        continue
+                    threshold = cov["threshold"]
+                    comp = cov["comparison"]
+                    in_compliance = True
+                    if comp == "gte" and metric_val < threshold:
+                        in_compliance = False
+                    elif comp == "lte" and metric_val > threshold:
+                        in_compliance = False
+                    elif comp == "gt" and metric_val <= threshold:
+                        in_compliance = False
+                    elif comp == "lt" and metric_val >= threshold:
+                        in_compliance = False
+                    elif comp == "eq" and metric_val != threshold:
+                        in_compliance = False
+                    if not in_compliance:
+                        breaches += 1
+                    conn.execute(
+                        "UPDATE fin_covenants SET current_value=?, in_compliance=?, "
+                        "last_checked=? WHERE covenant_id=?",
+                        (metric_val, 1 if in_compliance else 0, now, cov["covenant_id"]))
+                    results.append({
+                        "covenant": cov["covenant_name"], "metric": cov["metric"],
+                        "threshold": threshold, "current_value": metric_val,
+                        "comparison": comp, "in_compliance": in_compliance,
+                        "consequence": cov["consequence"] if not in_compliance else None})
+                conn.commit()
+                return {"instrument_id": instrument_id, "covenants_checked": len(results),
+                        "breaches": breaches, "results": results}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_check)
+
+    async def get_covenants(self, instrument_id: str) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM fin_covenants WHERE instrument_id=? ORDER BY covenant_name",
+                    (instrument_id,)).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class PricingEngine:
+    """Module 9: Fair value, yield, duration, and spread analytics."""
+
+    async def price_instrument(self, instrument_id: str, discount_rate: float = 0.05) -> Dict:
+        """Price all tranches of an instrument."""
+        def _price():
+            conn = _db_connect()
+            try:
+                tranches = conn.execute(
+                    "SELECT * FROM fin_tranches WHERE instrument_id=? ORDER BY seniority ASC",
+                    (instrument_id,)).fetchall()
+                if not tranches:
+                    return {"error": "no_tranches"}
+                now = time.time()
+                results = []
+                total_fair_value = 0
+                for t in tranches:
+                    notional = t["notional"]
+                    coupon = t["coupon_rate"]
+                    wal = t["wal_years"] or 3.0
+                    spread = (t["spread_bps"] or 100) / 10000.0
+                    # Simple DCF pricing
+                    total_rate = discount_rate + spread
+                    annual_coupon = notional * coupon
+                    pv_coupons = 0
+                    pv_principal = notional / ((1 + total_rate) ** wal)
+                    for yr in range(1, int(wal) + 1):
+                        pv_coupons += annual_coupon / ((1 + total_rate) ** yr)
+                    fair_value = pv_coupons + pv_principal
+                    yield_pct = coupon + spread
+                    duration = wal * (1 - coupon / (1 + total_rate))
+                    convexity = wal * (wal + 1) / ((1 + total_rate) ** 2)
+                    oas = spread * 10000  # OAS in bps
+                    pid = f"price-{uuid.uuid4().hex[:10]}"
+                    conn.execute(
+                        "INSERT INTO fin_pricing_results (pricing_id, instrument_id, "
+                        "tranche_id, pricing_method, discount_rate, spread_bps, "
+                        "fair_value, yield_pct, duration, convexity, oas_bps, priced_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (pid, instrument_id, t["tranche_id"], "dcf", discount_rate,
+                         t["spread_bps"], round(fair_value, 2), round(yield_pct, 4),
+                         round(duration, 2), round(convexity, 2), round(oas, 1), now))
+                    total_fair_value += fair_value
+                    results.append({
+                        "tranche": t["tranche_name"], "rating": t["rating"],
+                        "notional": notional, "fair_value": round(fair_value, 2),
+                        "yield_pct": round(yield_pct * 100, 2),
+                        "duration": round(duration, 2),
+                        "spread_bps": t["spread_bps"]})
+                conn.commit()
+                return {"instrument_id": instrument_id, "pricing_method": "dcf",
+                        "discount_rate": discount_rate,
+                        "total_fair_value": round(total_fair_value, 2),
+                        "tranches": results}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_price)
+
+    async def get_pricing(self, instrument_id: str) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM fin_pricing_results WHERE instrument_id=? "
+                    "ORDER BY priced_at DESC", (instrument_id,)).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class LegalFlagEngine:
+    """Module 10: Regulatory and legal compliance flagging."""
+
+    REGULATION_CHECKS = [
+        {"regulation": "SEC Rule 17g-5", "applies_to": ["ABS", "MBS", "CLO", "CDO"],
+         "check": "rating_agency_disclosure", "severity": "critical"},
+        {"regulation": "Dodd-Frank Risk Retention", "applies_to": ["ABS", "MBS", "CLO"],
+         "check": "5pct_risk_retention", "severity": "critical"},
+        {"regulation": "Reg AB II", "applies_to": ["ABS", "MBS"],
+         "check": "asset_level_disclosure", "severity": "warning"},
+        {"regulation": "Volcker Rule", "applies_to": ["CDO", "CLO"],
+         "check": "covered_fund_exemption", "severity": "critical"},
+        {"regulation": "Basel III Capital", "applies_to": ["ABS", "MBS", "CLO", "CDO"],
+         "check": "risk_weight_calculation", "severity": "info"},
+        {"regulation": "ERISA", "applies_to": ["ABS", "MBS", "CLO"],
+         "check": "plan_asset_regulation", "severity": "warning"},
+    ]
+
+    async def scan_instrument(self, instrument_id: str) -> Dict:
+        """Scan instrument for applicable regulatory flags."""
+        def _scan():
+            conn = _db_connect()
+            try:
+                inst = conn.execute("SELECT * FROM fin_instruments WHERE instrument_id=?",
+                                    (instrument_id,)).fetchone()
+                if not inst:
+                    return {"error": "instrument_not_found"}
+                asset_class = inst["asset_class"].upper()
+                now = time.time()
+                flags = []
+                for reg in LegalFlagEngine.REGULATION_CHECKS:
+                    if asset_class in reg["applies_to"]:
+                        fid = f"flag-{uuid.uuid4().hex[:10]}"
+                        recommendation = f"Review {reg['regulation']} compliance for {asset_class} instrument"
+                        conn.execute(
+                            "INSERT INTO fin_legal_flags (flag_id, instrument_id, flag_type, "
+                            "regulation, description, severity, recommendation, flagged_at) "
+                            "VALUES (?,?,?,?,?,?,?,?)",
+                            (fid, instrument_id, reg["check"], reg["regulation"],
+                             f"{reg['regulation']} applies to {asset_class} instruments",
+                             reg["severity"], recommendation, now))
+                        flags.append({"flag_id": fid, "regulation": reg["regulation"],
+                                      "severity": reg["severity"], "check": reg["check"]})
+                conn.commit()
+                critical = sum(1 for f in flags if f["severity"] == "critical")
+                return {"instrument_id": instrument_id, "asset_class": asset_class,
+                        "flags_raised": len(flags), "critical_flags": critical,
+                        "flags": flags}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_scan)
+
+    async def get_flags(self, instrument_id: str, unresolved_only: bool = True) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if unresolved_only:
+                    rows = conn.execute(
+                        "SELECT * FROM fin_legal_flags WHERE instrument_id=? AND resolved=0 "
+                        "ORDER BY severity DESC", (instrument_id,)).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM fin_legal_flags WHERE instrument_id=? ORDER BY flagged_at DESC",
+                        (instrument_id,)).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def resolve_flag(self, flag_id: str) -> Dict:
+        def _resolve():
+            conn = _db_connect()
+            try:
+                conn.execute("UPDATE fin_legal_flags SET resolved=1 WHERE flag_id=?", (flag_id,))
+                conn.commit()
+                return {"flag_id": flag_id, "resolved": True}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_resolve)
+
+
+class TermSheetGenerator:
+    """Module 11: Automated term sheet generation."""
+
+    async def generate(self, instrument_id: str) -> Dict:
+        """Generate a comprehensive term sheet from instrument data."""
+        def _gen():
+            conn = _db_connect()
+            try:
+                inst = conn.execute("SELECT * FROM fin_instruments WHERE instrument_id=?",
+                                    (instrument_id,)).fetchone()
+                if not inst:
+                    return {"error": "instrument_not_found"}
+                tranches = conn.execute(
+                    "SELECT * FROM fin_tranches WHERE instrument_id=? ORDER BY seniority ASC",
+                    (instrument_id,)).fetchall()
+                pool = conn.execute(
+                    "SELECT * FROM fin_asset_pools WHERE instrument_id=? LIMIT 1",
+                    (instrument_id,)).fetchone()
+                covenants = conn.execute(
+                    "SELECT * FROM fin_covenants WHERE instrument_id=?",
+                    (instrument_id,)).fetchall()
+                now = time.time()
+                params = json.loads(inst.get("parameters_json") or "{}")
+                # Build sections
+                sections = {
+                    "overview": {
+                        "title": inst["name"],
+                        "instrument_type": inst["instrument_type"],
+                        "asset_class": inst["asset_class"],
+                        "risk_profile": inst["risk_profile"],
+                    },
+                    "collateral": {
+                        "pool_name": pool["pool_name"] if pool else "N/A",
+                        "asset_type": pool["asset_type"] if pool else "N/A",
+                        "total_balance": pool["total_balance"] if pool else 0,
+                        "num_assets": pool["num_assets"] if pool else 0,
+                        "avg_rate": pool["avg_rate"] if pool else 0,
+                        "default_rate": pool["default_rate"] if pool else 0,
+                    },
+                    "capital_structure": [
+                        {"tranche": t["tranche_name"], "seniority": t["seniority"],
+                         "notional": t["notional"], "coupon": t["coupon_rate"],
+                         "rating": t["rating"], "subordination": t["subordination_pct"]}
+                        for t in tranches
+                    ],
+                    "covenants": [
+                        {"name": c["covenant_name"], "type": c["covenant_type"],
+                         "metric": c["metric"], "threshold": c["threshold"],
+                         "consequence": c["consequence"]}
+                        for c in covenants
+                    ],
+                }
+                key_terms = {
+                    "closing_date": "TBD",
+                    "maturity": f"{params.get('maturity_years', 5)} years",
+                    "payment_frequency": params.get("payment_freq", "Monthly"),
+                    "day_count": params.get("day_count", "30/360"),
+                    "governing_law": params.get("governing_law", "New York"),
+                }
+                total_notional = sum(t["notional"] for t in tranches)
+                version = conn.execute(
+                    "SELECT COALESCE(MAX(version), 0) + 1 FROM fin_term_sheets "
+                    "WHERE instrument_id=?", (instrument_id,)).fetchone()[0]
+                sid = f"ts-{uuid.uuid4().hex[:10]}"
+                conn.execute(
+                    "INSERT INTO fin_term_sheets (sheet_id, instrument_id, version, title, "
+                    "sections_json, key_terms_json, status, generated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (sid, instrument_id, version,
+                     f"{inst['name']} — Term Sheet v{version}",
+                     json.dumps(sections), json.dumps(key_terms), "draft", now))
+                conn.commit()
+                return {"sheet_id": sid, "version": version,
+                        "title": f"{inst['name']} — Term Sheet v{version}",
+                        "total_notional": total_notional,
+                        "tranches": len(tranches), "covenants": len(covenants),
+                        "status": "draft"}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_gen)
+
+    async def get_term_sheets(self, instrument_id: str) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM fin_term_sheets WHERE instrument_id=? ORDER BY version DESC",
+                    (instrument_id,)).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class NegotiationModeling:
+    """Module 12: Counterparty negotiation tracking and concession analysis."""
+
+    async def start_negotiation(self, instrument_id: str, counterparty: str,
+                                proposed_terms: Dict) -> Dict:
+        def _start():
+            conn = _db_connect()
+            try:
+                nid = f"neg-{uuid.uuid4().hex[:12]}"
+                now = time.time()
+                conn.execute(
+                    "INSERT INTO fin_negotiations (negotiation_id, instrument_id, counterparty, "
+                    "round_number, proposed_terms_json, status, leverage_score, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (nid, instrument_id, counterparty, 1,
+                     json.dumps(proposed_terms), "active", 0.5, now))
+                conn.commit()
+                return {"negotiation_id": nid, "counterparty": counterparty,
+                        "round": 1, "status": "active"}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_start)
+
+    async def record_counterproposal(self, negotiation_id: str, counterproposal: Dict,
+                                      concessions: Dict = None) -> Dict:
+        def _record():
+            conn = _db_connect()
+            try:
+                neg = conn.execute("SELECT * FROM fin_negotiations WHERE negotiation_id=?",
+                                   (negotiation_id,)).fetchone()
+                if not neg:
+                    return {"error": "negotiation_not_found"}
+                new_round = neg["round_number"] + 1
+                # Calculate leverage shift based on concession count
+                num_concessions = len(concessions) if concessions else 0
+                leverage_delta = -0.05 * num_concessions  # Each concession reduces leverage
+                new_leverage = max(0.0, min(1.0, neg["leverage_score"] + leverage_delta))
+                conn.execute(
+                    "UPDATE fin_negotiations SET round_number=?, counterproposal_json=?, "
+                    "concessions_json=?, leverage_score=? WHERE negotiation_id=?",
+                    (new_round, json.dumps(counterproposal),
+                     json.dumps(concessions or {}), new_leverage, negotiation_id))
+                conn.commit()
+                return {"negotiation_id": negotiation_id, "round": new_round,
+                        "leverage_score": round(new_leverage, 2),
+                        "concessions_made": num_concessions}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_record)
+
+    async def resolve(self, negotiation_id: str, status: str = "agreed",
+                      notes: str = None) -> Dict:
+        def _resolve():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "UPDATE fin_negotiations SET status=?, notes=?, resolved_at=? "
+                    "WHERE negotiation_id=?",
+                    (status, notes, time.time(), negotiation_id))
+                conn.commit()
+                return {"negotiation_id": negotiation_id, "status": status}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_resolve)
+
+    async def get_negotiations(self, instrument_id: str) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM fin_negotiations WHERE instrument_id=? ORDER BY created_at DESC",
+                    (instrument_id,)).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class LifecycleMonitor:
+    """Module 13: Ongoing instrument lifecycle event tracking."""
+
+    async def record_event(self, instrument_id: str, event_type: str,
+                           event_data: Dict = None, impact: str = None,
+                           action_taken: str = None, triggered_by: str = "system") -> Dict:
+        def _record():
+            conn = _db_connect()
+            try:
+                eid = f"lce-{uuid.uuid4().hex[:10]}"
+                now = time.time()
+                conn.execute(
+                    "INSERT INTO fin_lifecycle_events (event_id, instrument_id, event_type, "
+                    "event_data_json, impact_assessment, action_taken, triggered_by, event_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (eid, instrument_id, event_type, json.dumps(event_data or {}),
+                     impact, action_taken, triggered_by, now))
+                conn.commit()
+                return {"event_id": eid, "event_type": event_type, "instrument_id": instrument_id}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_record)
+
+    async def get_events(self, instrument_id: str, event_type: str = None,
+                         limit: int = 50) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if event_type:
+                    rows = conn.execute(
+                        "SELECT * FROM fin_lifecycle_events WHERE instrument_id=? "
+                        "AND event_type=? ORDER BY event_at DESC LIMIT ?",
+                        (instrument_id, event_type, limit)).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM fin_lifecycle_events WHERE instrument_id=? "
+                        "ORDER BY event_at DESC LIMIT ?",
+                        (instrument_id, limit)).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_timeline(self, instrument_id: str) -> Dict:
+        """Get a timeline summary of all lifecycle events."""
+        def _q():
+            conn = _db_connect()
+            try:
+                events = conn.execute(
+                    "SELECT event_type, COUNT(*) as cnt, MAX(event_at) as last_at "
+                    "FROM fin_lifecycle_events WHERE instrument_id=? "
+                    "GROUP BY event_type ORDER BY last_at DESC",
+                    (instrument_id,)).fetchall()
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM fin_lifecycle_events WHERE instrument_id=?",
+                    (instrument_id,)).fetchone()[0]
+                return {"instrument_id": instrument_id, "total_events": total,
+                        "event_types": [{"type": e["event_type"], "count": e["cnt"]}
+                                        for e in events]}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class FinApprovalManager:
+    """Module 14: Approval workflows and risk sign-off."""
+
+    async def request_approval(self, instrument_id: str, approval_type: str,
+                               requested_by: str = "system",
+                               risk_assessment: Dict = None) -> Dict:
+        def _request():
+            conn = _db_connect()
+            try:
+                aid = f"fappr-{uuid.uuid4().hex[:10]}"
+                now = time.time()
+                conn.execute(
+                    "INSERT INTO fin_approvals (approval_id, instrument_id, approval_type, "
+                    "requested_by, status, risk_assessment_json, requested_at) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (aid, instrument_id, approval_type, requested_by, "pending",
+                     json.dumps(risk_assessment or {}), now))
+                conn.commit()
+                return {"approval_id": aid, "approval_type": approval_type, "status": "pending"}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_request)
+
+    async def approve(self, approval_id: str, approver: str = "risk_committee",
+                      comments: str = None) -> Dict:
+        def _approve():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "UPDATE fin_approvals SET status='approved', approver=?, comments=?, "
+                    "decided_at=? WHERE approval_id=?",
+                    (approver, comments, time.time(), approval_id))
+                conn.commit()
+                return {"approval_id": approval_id, "status": "approved", "approver": approver}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_approve)
+
+    async def reject(self, approval_id: str, approver: str = "risk_committee",
+                     comments: str = None) -> Dict:
+        def _reject():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "UPDATE fin_approvals SET status='rejected', approver=?, comments=?, "
+                    "decided_at=? WHERE approval_id=?",
+                    (approver, comments, time.time(), approval_id))
+                conn.commit()
+                return {"approval_id": approval_id, "status": "rejected"}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_reject)
+
+    async def get_pending(self, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    "SELECT fa.*, fi.name as instrument_name FROM fin_approvals fa "
+                    "LEFT JOIN fin_instruments fi ON fa.instrument_id = fi.instrument_id "
+                    "WHERE fa.status='pending' ORDER BY fa.requested_at DESC LIMIT ?",
+                    (limit,)).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class FinAuditTrail:
+    """Module 15: Comprehensive audit trail for compliance."""
+
+    async def record(self, instrument_id: str, action: str, actor: str = "system",
+                     details: Dict = None, compliance_note: str = None) -> Dict:
+        def _record():
+            conn = _db_connect()
+            try:
+                aid = f"faudit-{uuid.uuid4().hex[:10]}"
+                now = time.time()
+                conn.execute(
+                    "INSERT INTO fin_audit_trail (audit_id, instrument_id, action, actor, "
+                    "details_json, compliance_note, recorded_at) VALUES (?,?,?,?,?,?,?)",
+                    (aid, instrument_id, action, actor, json.dumps(details or {}),
+                     compliance_note, now))
+                conn.commit()
+                return {"audit_id": aid, "action": action}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_record)
+
+    async def get_trail(self, instrument_id: str, limit: int = 100) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM fin_audit_trail WHERE instrument_id=? "
+                    "ORDER BY recorded_at DESC LIMIT ?",
+                    (instrument_id, limit)).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_stats(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                total = conn.execute("SELECT COUNT(*) FROM fin_audit_trail").fetchone()[0]
+                by_action = conn.execute(
+                    "SELECT action, COUNT(*) as cnt FROM fin_audit_trail "
+                    "GROUP BY action ORDER BY cnt DESC LIMIT 20").fetchall()
+                return {"total_records": total,
+                        "by_action": {r["action"]: r["cnt"] for r in by_action}}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+# Instantiate Financial Engineering services
+instrument_intake = InstrumentIntake()
+design_engine = DesignEngine()
+asset_pool_modeling = AssetPoolModeling()
+waterfall_engine = WaterfallEngine()
+tranche_modeling = TrancheModeling()
+cashflow_sim = CashFlowSimulation()
+stress_testing = StressTesting()
+covenant_logic = CovenantLogic()
+pricing_engine = PricingEngine()
+legal_flag_engine = LegalFlagEngine()
+term_sheet_gen = TermSheetGenerator()
+negotiation_modeling = NegotiationModeling()
+lifecycle_monitor = LifecycleMonitor()
+fin_approval_mgr = FinApprovalManager()
+fin_audit_trail = FinAuditTrail()
+
+
+# ---------------------------------------------------------------------------
 # Dashboard API
 # ---------------------------------------------------------------------------
 
@@ -9650,6 +11052,46 @@ async def dashboard_vm_instances(request: web.Request) -> web.Response:
             "requests": requests, "pending_approvals": pending_approvals,
             "health": health, "cost": cost, "tenants": tenants,
         })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_fin_instruments(request: web.Request) -> web.Response:
+    """Dashboard for financial instruments overview."""
+    try:
+        stats = await instrument_intake.get_stats()
+        instruments = await instrument_intake.list_instruments(limit=30)
+        pending_approvals = await fin_approval_mgr.get_pending()
+        audit_stats = await fin_audit_trail.get_stats()
+        return web.json_response({
+            "instrument_stats": stats,
+            "instruments": instruments,
+            "pending_approvals": pending_approvals,
+            "audit_stats": audit_stats,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_fin_analytics(request: web.Request) -> web.Response:
+    """Dashboard for financial engineering analytics."""
+    try:
+        instruments = await instrument_intake.list_instruments(limit=10)
+        analytics = []
+        for inst in instruments:
+            iid = inst["instrument_id"]
+            tranches = await tranche_modeling.get_tranches(iid)
+            pools = await asset_pool_modeling.get_pools(iid)
+            pricing = await pricing_engine.get_pricing(iid)
+            flags = await legal_flag_engine.get_flags(iid)
+            analytics.append({
+                "instrument_id": iid, "name": inst.get("name"),
+                "status": inst.get("status"),
+                "tranches": len(tranches), "pools": len(pools),
+                "pricing_records": len(pricing), "legal_flags": len(flags),
+            })
+        return web.json_response({"instruments_analyzed": len(analytics),
+                                  "analytics": analytics})
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
@@ -10185,6 +11627,15 @@ SLASH_COMMANDS = {
     # VM Provisioning & Autoscaling
     "capacity": "Capacity detection (/capacity status|assess)",
     "vm": "VM provisioning (/vm status|templates|instances|request|approvals|approve|reject|cost|health)",
+    # Financial Engineering & Structured Instruments
+    "instrument": "Financial instruments (/instrument list|create|<id>|status)",
+    "structure": "Instrument design (/structure design|optimize|tranches|waterfall|pool <instrument_id>)",
+    "cashflow": "Cash flow projection (/cashflow project|scenarios <instrument_id>)",
+    "stress": "Stress testing (/stress run|results <instrument_id>)",
+    "covenant": "Covenant monitoring (/covenant list|check <instrument_id>)",
+    "pricing": "Instrument pricing (/pricing run|history <instrument_id>)",
+    "termsheet": "Term sheet generation (/termsheet generate|list <instrument_id>)",
+    "finaudit": "Financial audit trail (/finaudit trail|stats <instrument_id>)",
     # Core
     "memory": "Show persistent memory stats (/memory search|distill <query>)",
     "forget": "Clear memory (/forget, /forget all, /forget thread, /forget channel)",
@@ -12301,6 +13752,351 @@ async def handle_slash_command(cmd: str, args: str, channel: str, thread_ts: str
                 "`cost`, `health`", channel, thread_ts)
         return True
 
+    # ── Financial Engineering & Structured Instruments ──
+    if cmd == "instrument":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "list"
+        sub_arg = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "list":
+            instruments = await instrument_intake.list_instruments(limit=20)
+            lines = [":bank: *Financial Instruments*\n"]
+            if not instruments:
+                lines.append("_No instruments created yet._")
+            for i in instruments:
+                status_icon = {"draft": ":pencil:", "active": ":large_green_circle:",
+                               "closed": ":lock:", "archived": ":file_cabinet:"}.get(i.get("status", ""), ":grey_question:")
+                lines.append(f"{status_icon} `{i['instrument_id'][:18]}` — *{i.get('name', '?')}* [{i.get('instrument_type', '?')}] {i.get('asset_class', '')} ({i.get('status', '?')})")
+            stats = await instrument_intake.get_stats()
+            lines.append(f"\n_Total: {stats.get('total', 0)} instruments_")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "create" and sub_arg:
+            parts = sub_arg.split("|")
+            name = parts[0].strip()
+            itype = parts[1].strip() if len(parts) > 1 else "ABS"
+            aclass = parts[2].strip() if len(parts) > 2 else "ABS"
+            result = await instrument_intake.create_instrument(name, itype, aclass)
+            await fin_audit_trail.record(result["instrument_id"], "instrument_created",
+                                         actor="operator", details=result)
+            await post_message(
+                f":white_check_mark: Created instrument `{result['instrument_id']}`\n"
+                f"*Name:* {name} | *Type:* {itype} | *Class:* {aclass}",
+                channel, thread_ts)
+
+        elif subcmd == "status" and sub_arg:
+            parts = sub_arg.split()
+            iid = parts[0]
+            new_status = parts[1] if len(parts) > 1 else None
+            if new_status:
+                result = await instrument_intake.update_status(iid, new_status)
+                await fin_audit_trail.record(iid, "status_changed",
+                                             actor="operator", details={"new_status": new_status})
+                await post_message(f":arrows_counterclockwise: Status updated: `{iid}` → *{new_status}*",
+                                   channel, thread_ts)
+            else:
+                inst = await instrument_intake.get_instrument(iid)
+                if inst:
+                    lines = [f":bank: *{inst.get('name', '?')}*\n"]
+                    lines.append(f"*ID:* `{iid}`")
+                    lines.append(f"*Type:* {inst.get('instrument_type', '?')} | *Class:* {inst.get('asset_class', '?')}")
+                    lines.append(f"*Status:* {inst.get('status', '?')} | *Risk:* {inst.get('risk_profile', '?')}")
+                    await post_message("\n".join(lines), channel, thread_ts)
+                else:
+                    await post_message(f":x: Instrument `{iid}` not found.", channel, thread_ts)
+
+        else:
+            inst = await instrument_intake.get_instrument(subcmd)
+            if inst:
+                tranches = await tranche_modeling.get_tranches(subcmd)
+                pools = await asset_pool_modeling.get_pools(subcmd)
+                flags = await legal_flag_engine.get_flags(subcmd)
+                lines = [f":bank: *{inst.get('name', '?')}* — `{subcmd}`\n"]
+                lines.append(f"*Type:* {inst.get('instrument_type', '?')} | *Class:* {inst.get('asset_class', '?')} | *Status:* {inst.get('status', '?')}")
+                lines.append(f"*Tranches:* {len(tranches)} | *Pools:* {len(pools)} | *Legal flags:* {len(flags)}")
+                for t in tranches:
+                    lines.append(f"  :small_blue_diamond: {t.get('tranche_name', '?')} ({t.get('rating', 'NR')}) — ${t.get('notional', 0):,.0f} @ {t.get('coupon_rate', 0)*100:.1f}%")
+                await post_message("\n".join(lines), channel, thread_ts)
+            else:
+                await post_message(
+                    ":bank: */instrument* commands: `list`, `create <name>|<type>|<class>`, "
+                    "`status <id> [new_status]`, `<instrument_id>`",
+                    channel, thread_ts)
+        return True
+
+    if cmd == "structure":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "help"
+        sub_arg = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "design" and sub_arg:
+            parts = sub_arg.split("|")
+            iid = parts[0].strip()
+            dtype = parts[1].strip() if len(parts) > 1 else "pass_through"
+            result = await design_engine.create_design(iid, dtype,
+                {"tranches": True, "waterfall": True, "collateral": True})
+            opt = await design_engine.optimize_structure(result["design_id"])
+            await post_message(
+                f":triangular_ruler: Design created: `{result['design_id']}`\n"
+                f"*Type:* {dtype} | *Score:* {opt.get('score', 0)} | *Status:* {opt.get('status', '?')}",
+                channel, thread_ts)
+
+        elif subcmd == "tranches" and sub_arg:
+            analysis = await tranche_modeling.analyze_tranches(sub_arg)
+            if analysis.get("error"):
+                await post_message(f":x: {analysis['error']}", channel, thread_ts)
+            else:
+                lines = [f":bar_chart: *Tranche Analysis* — `{sub_arg}`\n"]
+                lines.append(f"*Total notional:* ${analysis.get('total_notional', 0):,.0f}")
+                for t in analysis.get("tranches", []):
+                    lines.append(
+                        f"  {t.get('tranche_name', '?')} ({t.get('rating', 'NR')}) — "
+                        f"WAL: {t.get('wal_years', 0):.1f}yr | EL: ${t.get('expected_loss', 0):,.0f} | "
+                        f"Spread: {t.get('spread_bps', 0)}bps")
+                await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "waterfall" and sub_arg:
+            parts = sub_arg.split()
+            iid = parts[0]
+            amount = float(parts[1]) if len(parts) > 1 else 100000
+            result = await waterfall_engine.execute_waterfall(iid, amount)
+            lines = [f":ocean: *Waterfall Execution* — `{iid}`\n"]
+            lines.append(f"*Available cash:* ${amount:,.2f}")
+            for d in result.get("distributions", []):
+                lines.append(f"  P{d['priority']} {d['rule']} → {d.get('tranche', 'N/A')} — ${d['allocated']:,.2f}")
+            lines.append(f"*Remaining:* ${result.get('remaining', 0):,.2f}")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "pool" and sub_arg:
+            pools = await asset_pool_modeling.get_pools(sub_arg)
+            lines = [f":package: *Asset Pools* — `{sub_arg}`\n"]
+            if not pools:
+                lines.append("_No pools. Create with asset pool modeling._")
+            for p in pools:
+                lines.append(
+                    f"  `{p.get('pool_id', '?')[:15]}` — {p.get('pool_name', '?')} | "
+                    f"${p.get('total_balance', 0):,.0f} | {p.get('num_assets', 0)} assets | "
+                    f"Default: {p.get('default_rate', 0)*100:.1f}%")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        else:
+            await post_message(
+                ":triangular_ruler: */structure* commands: `design <inst_id>|<type>`, "
+                "`tranches <inst_id>`, `waterfall <inst_id> [amount]`, `pool <inst_id>`",
+                channel, thread_ts)
+        return True
+
+    if cmd == "cashflow":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "help"
+        sub_arg = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "project" and sub_arg:
+            parts = sub_arg.split()
+            iid = parts[0]
+            periods = int(parts[1]) if len(parts) > 1 else 60
+            result = await cashflow_sim.project_cashflows(iid, periods=periods)
+            if result.get("error"):
+                await post_message(f":x: {result['error']}", channel, thread_ts)
+            else:
+                lines = [f":moneybag: *Cash Flow Projection* — `{iid}` ({result.get('scenario', 'base')})\n"]
+                lines.append(f"*Periods:* {result.get('periods_projected', 0)}")
+                lines.append(f"*Total interest:* ${result.get('total_interest', 0):,.2f}")
+                lines.append(f"*Total defaults:* ${result.get('total_defaults', 0):,.2f}")
+                lines.append(f"*Terminal balance:* ${result.get('terminal_balance', 0):,.2f}")
+                await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "scenarios" and sub_arg:
+            projs = await cashflow_sim.get_projections(sub_arg)
+            lines = [f":chart_with_upwards_trend: *Projections* — `{sub_arg}`\n"]
+            lines.append(f"_Total periods:_ {len(projs)}")
+            if projs:
+                first5 = projs[:5]
+                for p in first5:
+                    lines.append(f"  M+{p.get('period', '?')}: CF=${p.get('net_cashflow', 0):,.0f} | Bal=${p.get('residual', 0):,.0f}")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        else:
+            await post_message(
+                ":moneybag: */cashflow* commands: `project <inst_id> [periods]`, "
+                "`scenarios <inst_id>`", channel, thread_ts)
+        return True
+
+    if cmd == "stress":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "help"
+        sub_arg = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "run" and sub_arg:
+            result = await stress_testing.run_stress_tests(sub_arg)
+            if result.get("error"):
+                await post_message(f":x: {result['error']}", channel, thread_ts)
+            else:
+                overall = ":white_check_mark:" if result.get("overall_pass") else ":x:"
+                lines = [f":rotating_light: *Stress Test Results* — `{sub_arg}` {overall}\n"]
+                for r in result.get("results", []):
+                    icon = ":white_check_mark:" if r.get("passes") else ":x:"
+                    lines.append(
+                        f"  {icon} *{r['scenario']}* ({r['severity']}) — "
+                        f"Loss: {r.get('loss_pct_of_pool', 0):.1f}% | "
+                        f"Impaired: {len(r.get('impaired_tranches', []))}")
+                await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "results" and sub_arg:
+            results = await stress_testing.get_results(sub_arg)
+            lines = [f":clipboard: *Stress History* — `{sub_arg}`\n"]
+            for r in results[:10]:
+                icon = ":white_check_mark:" if r.get("passes_threshold") else ":x:"
+                lines.append(f"  {icon} {r.get('scenario_name', '?')} ({r.get('severity', '?')})")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        else:
+            await post_message(
+                ":rotating_light: */stress* commands: `run <inst_id>`, `results <inst_id>`",
+                channel, thread_ts)
+        return True
+
+    if cmd == "covenant":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "help"
+        sub_arg = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "list" and sub_arg:
+            covenants = await covenant_logic.get_covenants(sub_arg)
+            lines = [f":scroll: *Covenants* — `{sub_arg}`\n"]
+            if not covenants:
+                lines.append("_No covenants defined._")
+            for c in covenants:
+                icon = ":white_check_mark:" if c.get("in_compliance") else ":x:"
+                lines.append(
+                    f"  {icon} *{c.get('covenant_name', '?')}* — "
+                    f"{c.get('metric', '?')} {c.get('comparison', '?')} {c.get('threshold', 0)} "
+                    f"(current: {c.get('current_value', 'N/A')})")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "check" and sub_arg:
+            parts = sub_arg.split("|")
+            iid = parts[0].strip()
+            # Parse metrics from remaining args
+            metrics = {}
+            if len(parts) > 1:
+                for kv in parts[1:]:
+                    k, _, v = kv.strip().partition("=")
+                    try:
+                        metrics[k.strip()] = float(v.strip())
+                    except ValueError:
+                        pass
+            result = await covenant_logic.check_covenants(iid, metrics)
+            breaches = result.get("breaches", 0)
+            icon = ":white_check_mark:" if breaches == 0 else f":warning: {breaches} breaches"
+            lines = [f":scroll: *Covenant Check* — `{iid}` {icon}\n"]
+            for r in result.get("results", []):
+                status_icon = ":white_check_mark:" if r.get("in_compliance") else ":x:"
+                lines.append(f"  {status_icon} {r.get('covenant', '?')}: {r.get('current_value', 'N/A')} vs {r.get('threshold', '?')}")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        else:
+            await post_message(
+                ":scroll: */covenant* commands: `list <inst_id>`, "
+                "`check <inst_id>|metric1=val|metric2=val`",
+                channel, thread_ts)
+        return True
+
+    if cmd == "pricing":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "help"
+        sub_arg = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "run" and sub_arg:
+            parts = sub_arg.split()
+            iid = parts[0]
+            rate = float(parts[1]) if len(parts) > 1 else 0.05
+            result = await pricing_engine.price_instrument(iid, discount_rate=rate)
+            if result.get("error"):
+                await post_message(f":x: {result['error']}", channel, thread_ts)
+            else:
+                lines = [f":chart_with_upwards_trend: *Pricing Results* — `{iid}`\n"]
+                lines.append(f"*Method:* {result.get('pricing_method', '?')} | *Discount:* {rate*100:.1f}%")
+                lines.append(f"*Total fair value:* ${result.get('total_fair_value', 0):,.2f}\n")
+                for t in result.get("tranches", []):
+                    lines.append(
+                        f"  {t.get('tranche', '?')} ({t.get('rating', 'NR')}) — "
+                        f"FV: ${t.get('fair_value', 0):,.0f} | Yield: {t.get('yield_pct', 0):.2f}% | "
+                        f"Duration: {t.get('duration', 0):.1f}")
+                await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "history" and sub_arg:
+            pricing = await pricing_engine.get_pricing(sub_arg)
+            lines = [f":bar_chart: *Pricing History* — `{sub_arg}`\n"]
+            lines.append(f"_Records:_ {len(pricing)}")
+            for p in pricing[:10]:
+                lines.append(f"  `{p.get('pricing_id', '?')[:12]}` — FV: ${p.get('fair_value', 0):,.0f} | Yield: {p.get('yield_pct', 0)*100:.2f}%")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        else:
+            await post_message(
+                ":chart_with_upwards_trend: */pricing* commands: `run <inst_id> [discount_rate]`, "
+                "`history <inst_id>`", channel, thread_ts)
+        return True
+
+    if cmd == "termsheet":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "help"
+        sub_arg = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "generate" and sub_arg:
+            result = await term_sheet_gen.generate(sub_arg)
+            if result.get("error"):
+                await post_message(f":x: {result['error']}", channel, thread_ts)
+            else:
+                lines = [f":page_facing_up: *Term Sheet Generated*\n"]
+                lines.append(f"*Title:* {result.get('title', '?')}")
+                lines.append(f"*Version:* {result.get('version', 0)}")
+                lines.append(f"*Tranches:* {result.get('tranches', 0)} | *Covenants:* {result.get('covenants', 0)}")
+                lines.append(f"*Total notional:* ${result.get('total_notional', 0):,.0f}")
+                await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "list" and sub_arg:
+            sheets = await term_sheet_gen.get_term_sheets(sub_arg)
+            lines = [f":page_facing_up: *Term Sheets* — `{sub_arg}`\n"]
+            for s in sheets:
+                lines.append(f"  v{s.get('version', 0)} — {s.get('title', '?')} [{s.get('status', '?')}]")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        else:
+            await post_message(
+                ":page_facing_up: */termsheet* commands: `generate <inst_id>`, `list <inst_id>`",
+                channel, thread_ts)
+        return True
+
+    if cmd == "finaudit":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "help"
+        sub_arg = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "trail" and sub_arg:
+            trail = await fin_audit_trail.get_trail(sub_arg, limit=20)
+            lines = [f":detective: *Audit Trail* — `{sub_arg}`\n"]
+            if not trail:
+                lines.append("_No audit records._")
+            for t in trail:
+                lines.append(f"  `{t.get('audit_id', '?')[:12]}` — {t.get('action', '?')} by {t.get('actor', '?')}")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "stats":
+            stats = await fin_audit_trail.get_stats()
+            lines = [":detective: *Financial Audit Stats*\n"]
+            lines.append(f"*Total records:* {stats.get('total_records', 0)}")
+            for action, cnt in stats.get("by_action", {}).items():
+                lines.append(f"  {action}: {cnt}")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        else:
+            await post_message(
+                ":detective: */finaudit* commands: `trail <inst_id>`, `stats`",
+                channel, thread_ts)
+        return True
+
     return False
 
 
@@ -12601,7 +14397,7 @@ async def handle_health(request: web.Request) -> web.Response:
     return web.json_response({
         "status": "healthy",
         "service": "bunny-alpha",
-        "version": "3.4.0",
+        "version": "3.5.0",
         "active_tasks": len(active),
         "total_tasks": len(task_manager.tasks),
         "providers": {
@@ -12648,7 +14444,7 @@ async def on_startup(app: web.Application):
     if result.get("ok"):
         BOT_USER_ID = result["user_id"]
         log.info(
-            f"Bunny Alpha v3.4 online | bot={result['user']} | "
+            f"Bunny Alpha v3.5 online | bot={result['user']} | "
             f"team={result['team']} | user_id={BOT_USER_ID}"
         )
     else:
@@ -12828,6 +14624,15 @@ async def on_startup(app: web.Application):
     except Exception as e:
         log.warning(f"VM provisioning init error: {e}")
 
+    # Financial Engineering initialization
+    try:
+        fin_stats = await instrument_intake.get_stats()
+        log.info(f"Financial instruments: {fin_stats.get('total', 0)} instruments loaded")
+        audit_stats = await fin_audit_trail.get_stats()
+        log.info(f"Financial audit trail: {audit_stats.get('total_records', 0)} records")
+    except Exception as e:
+        log.warning(f"Financial engineering init error: {e}")
+
     log.info(f"Listening on port {PORT}")
 
     # Start background services
@@ -12836,7 +14641,7 @@ async def on_startup(app: web.Application):
     await scheduler.start_scheduler_loop()
     await intel_loop.start_loop(3600)  # Intelligence loop every hour
 
-    await audit.log("system_startup", payload={"version": "3.3.0"})
+    await audit.log("system_startup", payload={"version": "3.5.0"})
 
 
 async def _periodic_cleanup():
@@ -12895,8 +14700,10 @@ def main():
     app.router.add_get("/dashboard/capacity", dashboard_capacity)
     app.router.add_get("/dashboard/vm/templates", dashboard_vm_templates)
     app.router.add_get("/dashboard/vm/instances", dashboard_vm_instances)
+    app.router.add_get("/dashboard/fin/instruments", dashboard_fin_instruments)
+    app.router.add_get("/dashboard/fin/analytics", dashboard_fin_analytics)
 
-    log.info("Starting Bunny Alpha v3.4 \u2014 Autonomous Operations Platform")
+    log.info("Starting Bunny Alpha v3.5 \u2014 Autonomous Operations Platform")
     web.run_app(app, host="0.0.0.0", port=PORT)
 
 
