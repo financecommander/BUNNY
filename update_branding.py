@@ -58,11 +58,10 @@ slack_replacements = [
     (
         '"Communication style:\\n"',
         '"BUNNY AI ASSISTANT ARCHITECTURE:\\n"\n'
-        '        "Three OpenClaw assistants serve the Calculus team:\\n"\n'
+        '        "Two OpenClaw assistants serve the Calculus team:\\n"\n'
         '        "1. Jack - Primary assistant (helpful, friendly, collaborative)\\n"\n'
-        '        "2. Joyceann - Operations assistant (concise, pragmatic, efficient)\\n"\n'
-        '        "3. Bunny Alpha (YOU) - Infrastructure assistant (technical, decisive)\\n\\n"\n'
-        '        "Authority: Jack/Joyceann interpret and dispatch. Bunny Alpha has full infrastructure authority.\\n"\n'
+        '        "2. Bunny Alpha (YOU) - Infrastructure assistant (technical, decisive)\\n\\n"\n'
+        '        "Authority: Jack interprets and dispatches. Bunny Alpha has full infrastructure authority.\\n"\n'
         '        "Execution: User -> AI Portal/Slack -> OpenClaw Assistant -> SWARM -> Provider -> Results\\n\\n"\n'
         '        "Communication style:\\n"'
     ),
