@@ -289,6 +289,34 @@
       "file": "BSA-44-global-governance-constitutional.md",
       "status": "active",
       "description": "Defines system rules, ethical boundaries, policy enforcement, and dispute resolution"
+    },
+    {
+      "id": "BSA-45",
+      "name": "Household Remote Control & Systems Orchestration",
+      "file": "BSA-45-household-remote-control.md",
+      "status": "active",
+      "description": "Framework for Jenny to remotely monitor, control, and coordinate household devices with safety governance"
+    },
+    {
+      "id": "BSA-46",
+      "name": "Household Security, Emergency Response & Resilience",
+      "file": "BSA-46-household-security-emergency.md",
+      "status": "active",
+      "description": "Household security monitoring, emergency detection, incident response, and system resilience"
+    },
+    {
+      "id": "BSA-47",
+      "name": "Vehicle Intelligence & Mobility Integration",
+      "file": "BSA-47-vehicle-intelligence-mobility.md",
+      "status": "active",
+      "description": "Vehicle telemetry monitoring, remote control, trip planning, EV charging, and fleet coordination"
+    },
+    {
+      "id": "BSA-48",
+      "name": "Physical Infrastructure & Property Intelligence",
+      "file": "BSA-48-physical-infrastructure-property.md",
+      "status": "active",
+      "description": "Building systems monitoring, property automation, energy management, and facility operations coordination"
     }
   ]
 }
