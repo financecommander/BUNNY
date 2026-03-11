@@ -163,6 +163,41 @@
       "file": "BSA-26-personal-knowledge-memory.md",
       "status": "active",
       "description": "Defines long-term personal memory, idea capture, knowledge recall, and intellectual workspace"
+    },
+    {
+      "id": "BSA-27",
+      "name": "Document Retrieval, Generation & Workspace Integration",
+      "file": "BSA-27-document-workspace-integration.md",
+      "status": "active",
+      "description": "Defines cross-platform document access, generation, editing, and file workflow orchestration"
+    },
+    {
+      "id": "BSA-28",
+      "name": "Multi-Connector Workspace Operations",
+      "file": "BSA-28-multi-connector-workspace.md",
+      "status": "active",
+      "description": "Defines cross-system file operations, connector governance, and workspace synchronization"
+    },
+    {
+      "id": "BSA-29",
+      "name": "Multi-Agent Coordination & Task Delegation",
+      "file": "BSA-29-multi-agent-coordination.md",
+      "status": "active",
+      "description": "Defines agent collaboration, task delegation, and distributed intelligence execution"
+    },
+    {
+      "id": "BSA-30",
+      "name": "Calculus AI Node Deployment",
+      "file": "BSA-30-node-deployment.md",
+      "status": "active",
+      "description": "Defines user-owned node deployment, edge intelligence, and distributed swarm expansion"
+    },
+    {
+      "id": "BSA-31",
+      "name": "Swarm Marketplace & Agent Distribution",
+      "file": "BSA-31-swarm-marketplace.md",
+      "status": "active",
+      "description": "Defines agent ecosystem, capability distribution, and extension marketplace"
     }
   ]
 }
