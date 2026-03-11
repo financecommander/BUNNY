@@ -226,6 +226,13 @@
       "file": "BSA-35-personal-health-wellness.md",
       "status": "active",
       "description": "Defines health tracking, wellness assistance, and personal care coordination via Jenny"
+    },
+    {
+      "id": "BSA-36",
+      "name": "Personal Learning & Education Intelligence",
+      "file": "BSA-36-personal-learning-education.md",
+      "status": "active",
+      "description": "Defines education support, skill development, and knowledge growth assistance via Jenny"
     }
   ]
 }
