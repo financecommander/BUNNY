@@ -109,7 +109,7 @@ pub enum AgentRole {
     IotFirewall,
     AiGuardian,
     Learning,
-    /// Task dispatcher — classifies requests and routes to SWARM.
+    /// Task dispatcher — classifies requests and routes to Calculus AI.
     /// Cannot modify code, repos, or infrastructure.
     Dispatcher,
     /// Custom agent with user-defined behavior.

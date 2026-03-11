@@ -151,6 +151,19 @@ def _init_db():
                 PRIMARY KEY (user_id, key)
             );
 
+            -- User profiles (per-user, supports email/comms/voice)
+            CREATE TABLE IF NOT EXISTS user_profiles (
+                user_id TEXT PRIMARY KEY,
+                display_name TEXT,
+                email_address TEXT,
+                email_provider TEXT DEFAULT 'gmail',
+                encrypted_creds TEXT,
+                phone_number TEXT,
+                comms_prefs TEXT DEFAULT '{}',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+
             -- Monitoring checks
             CREATE TABLE IF NOT EXISTS monitor_checks (
                 check_id TEXT PRIMARY KEY,
@@ -3343,6 +3356,76 @@ class PersistentMemory:
                 conn.close()
         return await self._run_sync(_query)
 
+    # -- user profiles --
+
+    async def create_profile(self, user_id: str, display_name: str = "",
+                              email_address: str = "", phone_number: str = "",
+                              comms_prefs: str = "{}") -> bool:
+        """Create or update a user profile."""
+        def _upsert():
+            conn = _db_connect()
+            try:
+                now = time.time()
+                conn.execute(
+                    "INSERT INTO user_profiles "
+                    "(user_id, display_name, email_address, phone_number, comms_prefs, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(user_id) DO UPDATE SET "
+                    "display_name=?, email_address=?, phone_number=?, comms_prefs=?, updated_at=?",
+                    (user_id, display_name, email_address, phone_number, comms_prefs, now, now,
+                     display_name, email_address, phone_number, comms_prefs, now),
+                )
+                conn.commit()
+                return True
+            finally:
+                conn.close()
+        return await self._run_sync(_upsert)
+
+    async def get_profile(self, user_id: str) -> Optional[Dict]:
+        """Get a user profile."""
+        def _query():
+            conn = _db_connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM user_profiles WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+        return await self._run_sync(_query)
+
+    async def delete_profile(self, user_id: str) -> bool:
+        """Delete a user profile."""
+        def _delete():
+            conn = _db_connect()
+            try:
+                conn.execute("DELETE FROM user_profiles WHERE user_id = ?", (user_id,))
+                conn.commit()
+                return True
+            finally:
+                conn.close()
+        return await self._run_sync(_delete)
+
+    async def update_profile_field(self, user_id: str, field: str, value: str) -> bool:
+        """Update a single field on a user profile."""
+        allowed = {"display_name", "email_address", "email_provider",
+                    "encrypted_creds", "phone_number", "comms_prefs"}
+        if field not in allowed:
+            return False
+        def _update():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    f"UPDATE user_profiles SET {field} = ?, updated_at = ? WHERE user_id = ?",
+                    (value, time.time(), user_id),
+                )
+                conn.commit()
+                return True
+            finally:
+                conn.close()
+        return await self._run_sync(_update)
+
     # -- search / knowledge base --
 
     async def search_messages(self, query: str, channel: str = None,
@@ -3383,7 +3466,8 @@ memory = PersistentMemory()
 
 BUNNY_ALPHA_PROMPT = """You are Bunny Alpha \u2014 Sean's personal AI assistant at Bunny AI (Calculus Holdings).
 
-Friendly, helpful, concise. You have FULL infrastructure access and follow all of Sean's commands.
+You are female. Friendly, concise, and capable. You have FULL infrastructure access and follow all of Sean's commands.
+Keep responses short and direct.
 
 You can execute real commands on infrastructure. When Sean asks you to DO something
 (check status, restart services, run commands, deploy, etc.), respond with executable
@@ -3415,7 +3499,7 @@ Rules:
 - Be concise. No disclaimers. Just do it.
 - After commands execute, you'll get results to summarize
 
-You are Bunny Alpha. Friendly. Capable. Always ready."""
+You are Bunny Alpha. Female. Friendly. Concise. Always ready."""
 
 
 # ---------------------------------------------------------------------------
@@ -4463,7 +4547,7 @@ class KnowledgeGraph:
             await self.add_entity("provider", provider)
 
         # Assistants
-        for name in ["jack", "joyceann", "bunny-alpha"]:
+        for name in ["jack", "bunny-alpha"]:
             await self.add_entity("assistant", name)
 
         # Edges
@@ -9817,7 +9901,6 @@ class AssistantPerformanceTracker:
             ("claude-code", "Claude Code"),
             ("bunny-alpha", "Bunny Alpha"),
             ("jack", "Jack"),
-            ("joyceann", "Joyceann"),
         ]
         for aid, name in assistants:
             await self.record_or_update(aid, name)
@@ -16324,6 +16407,61 @@ async def handle_slash_command(cmd: str, args: str, channel: str, thread_ts: str
         else:
             await memory.clear(channel)
             await post_message(":wastebasket: Memory cleared for this channel.", channel, thread_ts)
+        return True
+
+    if cmd == "profile":
+        sub = args.strip().split(maxsplit=1)
+        action = sub[0].lower() if sub else "show"
+        if action == "setup":
+            profile = await memory.get_profile(user_id)
+            if profile:
+                await post_message(f":bust_in_silhouette: Profile already exists for <@{user_id}>. Use `/profile show` or `/profile delete`.", channel, thread_ts)
+            else:
+                await memory.create_profile(user_id)
+                await post_message(
+                    f":bust_in_silhouette: *Profile created for <@{user_id}>*\n"
+                    "Set your info:\n"
+                    "  `/profile email you@gmail.com`\n"
+                    "  `/profile phone +1234567890`\n"
+                    "  `/profile name Your Name`\n\n"
+                    "Want to connect Gmail? Ask Jack: _connect my email_",
+                    channel, thread_ts,
+                )
+        elif action == "show":
+            profile = await memory.get_profile(user_id)
+            if profile:
+                lines = [":bust_in_silhouette: *Your Profile*\n"]
+                lines.append(f"  Name: `{profile.get('display_name') or 'not set'}`")
+                lines.append(f"  Email: `{profile.get('email_address') or 'not set'}`")
+                lines.append(f"  Phone: `{profile.get('phone_number') or 'not set'}`")
+                lines.append(f"  Provider: `{profile.get('email_provider') or 'gmail'}`")
+                lines.append(f"  Creds: `{'connected' if profile.get('encrypted_creds') else 'not connected'}`")
+                await post_message("\n".join(lines), channel, thread_ts)
+            else:
+                await post_message(":bust_in_silhouette: No profile. Use `/profile setup` to create one.", channel, thread_ts)
+        elif action == "delete":
+            await memory.delete_profile(user_id)
+            await post_message(f":wastebasket: Profile deleted for <@{user_id}>.", channel, thread_ts)
+        elif action == "email" and len(sub) > 1:
+            await memory.update_profile_field(user_id, "email_address", sub[1].strip())
+            await post_message(f":email: Email updated to `{sub[1].strip()}`", channel, thread_ts)
+        elif action == "phone" and len(sub) > 1:
+            await memory.update_profile_field(user_id, "phone_number", sub[1].strip())
+            await post_message(f":telephone_receiver: Phone updated to `{sub[1].strip()}`", channel, thread_ts)
+        elif action == "name" and len(sub) > 1:
+            await memory.update_profile_field(user_id, "display_name", sub[1].strip())
+            await post_message(f":bust_in_silhouette: Name updated to `{sub[1].strip()}`", channel, thread_ts)
+        else:
+            await post_message(
+                ":bust_in_silhouette: *Profile commands:*\n"
+                "  `/profile setup` — Create profile\n"
+                "  `/profile show` — View profile\n"
+                "  `/profile delete` — Delete profile\n"
+                "  `/profile email <addr>` — Set email\n"
+                "  `/profile phone <num>` — Set phone\n"
+                "  `/profile name <name>` — Set name",
+                channel, thread_ts,
+            )
         return True
 
     if cmd == "pref":

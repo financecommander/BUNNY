@@ -9,21 +9,20 @@ Previously referenced as SWARM, OpenClaw, or Codespaces — all now unified unde
 
 ## Assistants Deployed
 
-Three OpenClaw assistants are deployed:
+Two OpenClaw assistants are deployed:
 
 | Assistant | Role | Personality |
 |-----------|------|-------------|
-| **Jack** | Primary Calculus team assistant | Helpful, friendly, collaborative |
-| **Joyceann** | Operations assistant | Concise, pragmatic, efficient |
-| **Bunny Alpha** | Infrastructure assistant | Technical, decisive, systems-focused |
+| **Jack** | Primary Calculus team assistant | Male, mid-30s, helpful, friendly, collaborative, positive about Calculus |
+| **Bunny Alpha** | Personal AI assistant to Sean | Female, friendly, concise, capable, always ready |
 
-All three operate through **OpenClaw** via AI Portal and Slack.
+Both operate through **OpenClaw** via AI Portal and Slack.
 
 ---
 
 ## Authority Model
 
-### Jack and Joyceann
+### Jack
 - Interpret user requests
 - Classify task type
 - Assign tasks to SWARM
@@ -41,7 +40,7 @@ All of the above, PLUS:
 
 ## Execution Hierarchy
 
-User -> AI Portal / Slack -> OpenClaw Assistant Layer (Jack | Joyceann | Bunny Alpha) -> SWARM Router -> Execution Provider (Local models / Cloud models / Calculus Tools) -> Results returned -> Assistant formats response -> User receives reply
+User -> AI Portal / Slack -> OpenClaw Assistant Layer (Jack | Bunny Alpha) -> SWARM Router -> Execution Provider (Local models / Cloud models / Calculus Tools) -> Results returned -> Assistant formats response -> User receives reply
 
 **Critical rule:** Assistants do NOT execute models directly.
 All execution flows through: Assistant -> SWARM -> Model/Tool

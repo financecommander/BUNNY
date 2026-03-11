@@ -1,0 +1,168 @@
+{
+  "version": "1.0.0",
+  "updated": "2026-03-11",
+  "directives": [
+    {
+      "id": "BSA-01",
+      "name": "Swarm Architecture",
+      "file": "BSA-01-swarm-architecture.md",
+      "status": "active",
+      "description": "Defines the multi-plane architecture of the Calculus AI system",
+      "planes": ["security", "control", "cognition", "execution", "memory", "collective_intelligence"]
+    },
+    {
+      "id": "BSA-02",
+      "name": "Infrastructure & Operations",
+      "file": "BSA-02-infrastructure-operations.md",
+      "status": "active",
+      "description": "Defines compute infrastructure, orchestration, memory, and messaging layers"
+    },
+    {
+      "id": "BSA-03",
+      "name": "Autonomous Self-Improvement",
+      "file": "BSA-03-autonomous-self-improvement.md",
+      "status": "active",
+      "description": "Defines optimization, experimentation, and improvement pipeline"
+    },
+    {
+      "id": "BSA-04",
+      "name": "Autonomous Knowledge Acquisition",
+      "file": "BSA-04-autonomous-knowledge-acquisition.md",
+      "status": "active",
+      "description": "Defines knowledge discovery, ingestion, and integration framework"
+    },
+    {
+      "id": "BSA-08",
+      "name": "Jack Collaborative User Experience",
+      "file": "BSA-08-jack-collaborative-ux.md",
+      "status": "active",
+      "description": "Defines Jack as collaborative partner, user profiles, context awareness, and proactive assistance"
+    },
+    {
+      "id": "BSA-09",
+      "name": "Swarm Collaboration Protocol",
+      "file": "BSA-09-swarm-collaboration-protocol.md",
+      "status": "active",
+      "description": "Defines multi-user coordination, shared project spaces, and team intelligence"
+    },
+    {
+      "id": "BSA-10",
+      "name": "Strategic Intelligence",
+      "file": "BSA-10-strategic-intelligence.md",
+      "status": "active",
+      "description": "Defines strategic reasoning, scenario modeling, and decision support systems"
+    },
+    {
+      "id": "BSA-11",
+      "name": "Jack Voice, Messaging & Conversational Intelligence",
+      "file": "BSA-11-jack-voice-messaging.md",
+      "status": "active",
+      "description": "Defines voice pipeline, messaging systems, and conversational intelligence architecture"
+    },
+    {
+      "id": "BSA-12",
+      "name": "Autonomous Negotiation & Deal Intelligence",
+      "file": "BSA-12-negotiation-deal-intelligence.md",
+      "status": "active",
+      "description": "Defines negotiation support, deal structuring, and counterparty intelligence"
+    },
+    {
+      "id": "BSA-13",
+      "name": "Jack Persona & Phone Call Etiquette",
+      "file": "BSA-13-jack-persona-phone-etiquette.md",
+      "status": "active",
+      "description": "Defines Jack persona, communication style, and voice interaction conduct"
+    },
+    {
+      "id": "BSA-14",
+      "name": "Swarm Presence & Multi-Device Interface",
+      "file": "BSA-14-swarm-presence-multi-device.md",
+      "status": "active",
+      "description": "Defines multi-device access, continuous presence, and cross-platform interaction"
+    },
+    {
+      "id": "BSA-15",
+      "name": "Organizational Knowledge Governance",
+      "file": "BSA-15-organizational-knowledge-governance.md",
+      "status": "active",
+      "description": "Defines knowledge ownership, classification, lifecycle management, and institutional memory"
+    },
+    {
+      "id": "BSA-16",
+      "name": "Meeting Capture, Dictation & Work System Updates",
+      "file": "BSA-16-meeting-capture-dictation.md",
+      "status": "active",
+      "description": "Defines meeting transcription, task extraction, decision tracking, and Asana integration"
+    },
+    {
+      "id": "BSA-17",
+      "name": "Jack Email & Calendar Intelligence",
+      "file": "BSA-17-email-calendar-intelligence.md",
+      "status": "active",
+      "description": "Defines email management, calendar coordination, priority scoring, and communication automation"
+    },
+    {
+      "id": "BSA-18",
+      "name": "Autonomous Workflow Automation",
+      "file": "BSA-18-workflow-automation.md",
+      "status": "active",
+      "description": "Defines automated task execution, business process orchestration, and system integration"
+    },
+    {
+      "id": "BSA-19",
+      "name": "Autonomous Agent Workforce",
+      "file": "BSA-19-autonomous-agent-workforce.md",
+      "status": "active",
+      "description": "Defines persistent AI agents, role-based automation, and digital workforce management"
+    },
+    {
+      "id": "BSA-20",
+      "name": "Autonomous Strategic Planning",
+      "file": "BSA-20-strategic-planning.md",
+      "status": "active",
+      "description": "Defines long-range planning, scenario modeling, resource allocation, and strategic roadmap generation"
+    },
+    {
+      "id": "BSA-21",
+      "name": "Global Intelligence Monitoring",
+      "file": "BSA-21-global-intelligence-monitoring.md",
+      "status": "active",
+      "description": "Defines continuous external signal observation, pattern detection, and early warning intelligence network"
+    },
+    {
+      "id": "BSA-22",
+      "name": "Innovation & R&D Engine",
+      "file": "BSA-22-innovation-rd-engine.md",
+      "status": "active",
+      "description": "Defines idea generation, technology exploration, research acceleration, and prototype development"
+    },
+    {
+      "id": "BSA-23",
+      "name": "Personal Assistant Layer",
+      "file": "BSA-23-personal-assistant-layer.md",
+      "status": "active",
+      "description": "Defines personal context awareness, daily briefings, task intelligence, commitment tracking, and executive assistance"
+    },
+    {
+      "id": "BSA-24",
+      "name": "Executive Briefing & Intelligence",
+      "file": "BSA-24-executive-briefing.md",
+      "status": "active",
+      "description": "Defines daily/weekly intelligence reporting, priority awareness, and command dashboard for individuals and leadership"
+    },
+    {
+      "id": "BSA-25",
+      "name": "Personal Task Intelligence",
+      "file": "BSA-25-personal-task-intelligence.md",
+      "status": "active",
+      "description": "Defines task prioritization, workload management, and personal productivity optimization"
+    },
+    {
+      "id": "BSA-26",
+      "name": "Personal Knowledge Memory",
+      "file": "BSA-26-personal-knowledge-memory.md",
+      "status": "active",
+      "description": "Defines long-term personal memory, idea capture, knowledge recall, and intellectual workspace"
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 //! Jack — the Calculus team's task dispatcher agent.
 //!
 //! Jack interprets user requests, classifies them into one of the
-//! six `bunny-calculus` task categories, and routes to SWARM for
+//! six `bunny-calculus` task categories, and routes to Calculus AI for
 //! execution. Jack **cannot** modify code, repos, VMs, or
 //! infrastructure — he is a pure classifier and task router.
 
@@ -13,7 +13,7 @@ use crate::error::Result;
 
 // ── Task Categories ─────────────────────────────────────────────────
 
-/// The six Calculus tool categories Jack can route to.
+/// The seven Calculus tool categories Jack can route to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskCategory {
     /// Gradient apply, clip, alignment, norm, STE.
@@ -28,10 +28,12 @@ pub enum TaskCategory {
     Symbolic,
     /// Ternary add/dot, hamming distance, L1 norm, sparsity.
     TensorOps,
+    /// Email management: inbox, send, draft, reply, forward.
+    Email,
 }
 
 impl TaskCategory {
-    /// Category index for prediction output (0–5).
+    /// Category index for prediction output (0–6).
     pub fn index(self) -> usize {
         match self {
             Self::Gradient => 0,
@@ -40,6 +42,7 @@ impl TaskCategory {
             Self::Statistics => 3,
             Self::Symbolic => 4,
             Self::TensorOps => 5,
+            Self::Email => 6,
         }
     }
 
@@ -52,6 +55,7 @@ impl TaskCategory {
             Self::Statistics,
             Self::Symbolic,
             Self::TensorOps,
+            Self::Email,
         ]
     }
 
@@ -97,6 +101,12 @@ impl TaskCategory {
                 "ternary_l1_norm",
                 "ternary_sparsity",
             ],
+            Self::Email => &[
+                "list_emails",
+                "read_email",
+                "send_email",
+                "summarize_inbox",
+            ],
         }
     }
 
@@ -109,6 +119,7 @@ impl TaskCategory {
             Self::Statistics => "statistics",
             Self::Symbolic => "symbolic",
             Self::TensorOps => "tensor_ops",
+            Self::Email => "email",
         }
     }
 }
@@ -163,6 +174,12 @@ const TENSOR_OPS_KEYWORDS: &[&str] = &[
     "dot product", "add saturate",
 ];
 
+const EMAIL_KEYWORDS: &[&str] = &[
+    "email", "inbox", "mail", "send email", "draft",
+    "reply", "forward", "compose", "unread", "gmail",
+    "message", "attachment", "subject",
+];
+
 /// Score how many keywords from `keywords` appear in `request`.
 fn keyword_score(request: &str, keywords: &[&str]) -> f32 {
     let lower = request.to_lowercase();
@@ -186,6 +203,7 @@ pub fn classify_request(request: &str) -> TaskClassification {
         (TaskCategory::Statistics, STATISTICS_KEYWORDS),
         (TaskCategory::Symbolic, SYMBOLIC_KEYWORDS),
         (TaskCategory::TensorOps, TENSOR_OPS_KEYWORDS),
+        (TaskCategory::Email, EMAIL_KEYWORDS),
     ];
 
     let mut best_category = TaskCategory::Statistics; // fallback
@@ -270,8 +288,8 @@ impl Agent for JackDispatcher {
         let result_json = serde_json::to_string(&classification)
             .unwrap_or_else(|_| "{}".to_string());
 
-        // Output data: one-hot-ish confidence vector over 6 categories.
-        let mut data = vec![0.0f32; 6];
+        // Output data: one-hot-ish confidence vector over 7 categories.
+        let mut data = vec![0.0f32; 7];
         data[category_index] = classification.confidence;
 
         Ok(AgentOutput {
@@ -310,7 +328,7 @@ mod tests {
         assert_eq!(jack.role(), AgentRole::Dispatcher);
         assert!(!jack.system_prompt().is_empty());
         assert!(jack.system_prompt().contains("Jack"));
-        assert!(jack.system_prompt().contains("SWARM"));
+        assert!(jack.system_prompt().contains("Calculus AI"));
     }
 
     // ── Category Classification ────────────────────────────────────
@@ -368,13 +386,20 @@ mod tests {
     // ── Agent::process roundtrip ───────────────────────────────────
 
     #[test]
+    fn classify_email_request() {
+        let c = classify_request("check my email inbox for unread messages");
+        assert_eq!(c.category, "email");
+        assert!(c.confidence > 0.3);
+    }
+
+    #[test]
     fn jack_process_returns_classification() {
         let jack = JackDispatcher;
         let input = make_input("compute the gradient norm");
         let output = jack.process(&input).unwrap();
 
         assert_eq!(output.prediction, 0); // gradient = index 0
-        assert_eq!(output.data.len(), 6);
+        assert_eq!(output.data.len(), 7);
         assert!(output.data[0] > 0.0); // gradient slot has confidence
         assert!(output.result.is_some());
 
@@ -392,7 +417,7 @@ mod tests {
         };
         let output = jack.process(&input).unwrap();
         // Should still produce valid output (low-confidence fallback).
-        assert_eq!(output.data.len(), 6);
+        assert_eq!(output.data.len(), 7);
         assert!(output.result.is_some());
     }
 
@@ -420,7 +445,7 @@ mod tests {
 
     #[test]
     fn task_category_all_variants() {
-        assert_eq!(TaskCategory::all().len(), 6);
+        assert_eq!(TaskCategory::all().len(), 7);
     }
 
     #[test]
@@ -431,5 +456,6 @@ mod tests {
         assert_eq!(TaskCategory::Statistics.index(), 3);
         assert_eq!(TaskCategory::Symbolic.index(), 4);
         assert_eq!(TaskCategory::TensorOps.index(), 5);
+        assert_eq!(TaskCategory::Email.index(), 6);
     }
 }
