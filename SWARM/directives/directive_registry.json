@@ -219,6 +219,13 @@
       "file": "BSA-34-personal-finance-life-management.md",
       "status": "active",
       "description": "Defines financial organization, life logistics, and personal resource management via Jenny"
+    },
+    {
+      "id": "BSA-35",
+      "name": "Personal Health & Wellness Intelligence",
+      "file": "BSA-35-personal-health-wellness.md",
+      "status": "active",
+      "description": "Defines health tracking, wellness assistance, and personal care coordination via Jenny"
     }
   ]
 }
