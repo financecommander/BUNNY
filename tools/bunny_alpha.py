@@ -148,6 +148,157 @@ def _init_db():
                 updated_at REAL NOT NULL,
                 PRIMARY KEY (user_id, key)
             );
+
+            -- Monitoring checks
+            CREATE TABLE IF NOT EXISTS monitor_checks (
+                check_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                target TEXT NOT NULL,
+                check_type TEXT NOT NULL,
+                command TEXT NOT NULL,
+                interval_seconds INTEGER DEFAULT 300,
+                severity TEXT DEFAULT 'warning',
+                enabled INTEGER DEFAULT 1,
+                muted INTEGER DEFAULT 0,
+                last_status TEXT,
+                last_result TEXT,
+                last_run_at REAL
+            );
+
+            -- Monitoring alerts
+            CREATE TABLE IF NOT EXISTS monitor_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                check_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                message TEXT,
+                created_at REAL NOT NULL,
+                resolved_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_alerts_check ON monitor_alerts(check_id, created_at);
+
+            -- Scheduled jobs
+            CREATE TABLE IF NOT EXISTS scheduled_jobs (
+                job_id TEXT PRIMARY KEY,
+                owner TEXT,
+                channel_id TEXT,
+                thread_ts TEXT,
+                job_type TEXT NOT NULL,
+                description TEXT,
+                payload TEXT NOT NULL,
+                schedule_expression TEXT,
+                interval_seconds INTEGER,
+                next_run_at REAL,
+                last_run_at REAL,
+                enabled INTEGER DEFAULT 1,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_jobs_next ON scheduled_jobs(enabled, next_run_at);
+
+            -- Knowledge Graph
+            CREATE TABLE IF NOT EXISTS graph_entities (
+                entity_id TEXT PRIMARY KEY,
+                entity_type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                attributes_json TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_entities_type ON graph_entities(entity_type);
+            CREATE INDEX IF NOT EXISTS idx_entities_name ON graph_entities(name);
+
+            CREATE TABLE IF NOT EXISTS graph_edges (
+                edge_id TEXT PRIMARY KEY,
+                src_entity_id TEXT NOT NULL,
+                relation TEXT NOT NULL,
+                dst_entity_id TEXT NOT NULL,
+                attributes_json TEXT,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_edges_src ON graph_edges(src_entity_id);
+            CREATE INDEX IF NOT EXISTS idx_edges_dst ON graph_edges(dst_entity_id);
+            CREATE INDEX IF NOT EXISTS idx_edges_relation ON graph_edges(relation);
+
+            CREATE TABLE IF NOT EXISTS graph_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                payload_json TEXT,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_events_entity ON graph_events(entity_id, created_at);
+
+            -- Autonomous Planning
+            CREATE TABLE IF NOT EXISTS goal_plans (
+                plan_id TEXT PRIMARY KEY,
+                goal_text TEXT NOT NULL,
+                created_by TEXT,
+                status TEXT DEFAULT 'planning',
+                summary TEXT,
+                created_at REAL NOT NULL,
+                completed_at REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS plan_steps (
+                step_id TEXT PRIMARY KEY,
+                plan_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT,
+                task_type TEXT,
+                priority INTEGER DEFAULT 5,
+                dependencies TEXT,
+                assigned_service TEXT,
+                assigned_agent TEXT,
+                status TEXT DEFAULT 'pending',
+                retries INTEGER DEFAULT 0,
+                result_summary TEXT,
+                created_at REAL NOT NULL,
+                completed_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_steps_plan ON plan_steps(plan_id);
+
+            -- Multi-Agent
+            CREATE TABLE IF NOT EXISTS agent_specs (
+                agent_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                role TEXT NOT NULL,
+                capabilities TEXT,
+                priority INTEGER DEFAULT 5,
+                status TEXT DEFAULT 'active'
+            );
+
+            CREATE TABLE IF NOT EXISTS delegated_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                parent_task_id TEXT,
+                assigned_agent TEXT NOT NULL,
+                task_payload TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                result_summary TEXT,
+                confidence REAL,
+                created_at REAL NOT NULL,
+                completed_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_delegated_agent ON delegated_tasks(assigned_agent);
+
+            -- Predictive Monitoring
+            CREATE TABLE IF NOT EXISTS prediction_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target TEXT NOT NULL,
+                signal_type TEXT NOT NULL,
+                confidence REAL,
+                predicted_failure_window TEXT,
+                supporting_metrics TEXT,
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS risk_assessments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target TEXT NOT NULL,
+                risk_score REAL,
+                risk_level TEXT,
+                explanation TEXT,
+                recommended_action TEXT,
+                created_at REAL NOT NULL
+            );
         """)
         conn.commit()
         log.info(f"Persistent memory initialized: {DB_PATH}")
@@ -981,6 +1132,678 @@ tool_executor = ToolExecutor()
 
 
 # ---------------------------------------------------------------------------
+# Monitoring Service
+# ---------------------------------------------------------------------------
+
+# Default health checks — seeded on first run
+DEFAULT_CHECKS = [
+    {"check_id": "vm-mainframe", "name": "Mainframe Uptime", "target": "swarm-mainframe",
+     "check_type": "ssh", "command": "uptime", "interval_seconds": 300, "severity": "critical"},
+    {"check_id": "vm-gpu", "name": "GPU VM Uptime", "target": "swarm-gpu",
+     "check_type": "ssh", "command": "uptime", "interval_seconds": 300, "severity": "critical"},
+    {"check_id": "vm-portal", "name": "AI Portal Uptime", "target": "fc-ai-portal",
+     "check_type": "ssh", "command": "uptime", "interval_seconds": 300, "severity": "critical"},
+    {"check_id": "vm-web", "name": "Calculus Web Uptime", "target": "calculus-web",
+     "check_type": "ssh", "command": "uptime", "interval_seconds": 300, "severity": "warning"},
+    {"check_id": "docker-health", "name": "Docker Containers", "target": "swarm-mainframe",
+     "check_type": "ssh", "command": "docker ps --format '{{.Names}}: {{.Status}}'", "interval_seconds": 300, "severity": "warning"},
+    {"check_id": "gpu-health", "name": "GPU Status", "target": "swarm-gpu",
+     "check_type": "ssh", "command": "nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader 2>/dev/null || echo 'GPU UNAVAILABLE'",
+     "interval_seconds": 600, "severity": "critical"},
+    {"check_id": "disk-mainframe", "name": "Disk Usage (mainframe)", "target": "swarm-mainframe",
+     "check_type": "ssh", "command": "df -h / | tail -1 | awk '{print $5}'", "interval_seconds": 1800, "severity": "warning"},
+    {"check_id": "disk-gpu", "name": "Disk Usage (GPU)", "target": "swarm-gpu",
+     "check_type": "ssh", "command": "df -h / | tail -1 | awk '{print $5}'", "interval_seconds": 1800, "severity": "warning"},
+    {"check_id": "ollama-health", "name": "Ollama Service", "target": "swarm-gpu",
+     "check_type": "ssh", "command": "curl -s http://localhost:11434/api/tags | head -c 200 || echo 'OLLAMA DOWN'",
+     "interval_seconds": 600, "severity": "warning"},
+]
+
+ALERT_CHANNEL = os.environ.get("BUNNY_ALERT_CHANNEL", "")  # Slack channel for alerts
+
+
+class MonitoringService:
+    """Proactive health monitoring with rule engine and alerts."""
+
+    def __init__(self):
+        self._running = False
+        self._task: Optional[asyncio.Task] = None
+
+    async def seed_defaults(self):
+        """Seed default checks if none exist."""
+        def _seed():
+            conn = _db_connect()
+            try:
+                count = conn.execute("SELECT COUNT(*) FROM monitor_checks").fetchone()[0]
+                if count == 0:
+                    for check in DEFAULT_CHECKS:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO monitor_checks "
+                            "(check_id, name, target, check_type, command, interval_seconds, severity) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (check["check_id"], check["name"], check["target"],
+                             check["check_type"], check["command"],
+                             check["interval_seconds"], check["severity"]),
+                        )
+                    conn.commit()
+                    return len(DEFAULT_CHECKS)
+                return 0
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_seed)
+
+    async def get_checks(self, enabled_only: bool = True) -> List[Dict]:
+        """Get all monitoring checks."""
+        def _query():
+            conn = _db_connect()
+            try:
+                if enabled_only:
+                    rows = conn.execute("SELECT * FROM monitor_checks WHERE enabled = 1").fetchall()
+                else:
+                    rows = conn.execute("SELECT * FROM monitor_checks").fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_query)
+
+    async def run_check(self, check: Dict) -> Dict:
+        """Execute a single health check."""
+        check_id = check["check_id"]
+        target = check["target"]
+        command = check["command"]
+        now = time.time()
+
+        try:
+            result = await tool_executor.execute("shell", target, command)
+            status = "ok"
+
+            # Basic threshold checks
+            if check_id.startswith("disk-"):
+                # Parse disk percentage
+                try:
+                    pct = int(result.strip().replace("%", ""))
+                    if pct > 90:
+                        status = "critical"
+                    elif pct > 80:
+                        status = "warning"
+                except (ValueError, AttributeError):
+                    pass
+            elif "UNAVAILABLE" in (result or "").upper() or "DOWN" in (result or "").upper():
+                status = "critical"
+            elif "error" in (result or "").lower():
+                status = "warning"
+
+        except Exception as e:
+            result = str(e)
+            status = "critical"
+
+        # Update check status in DB
+        def _update():
+            conn = _db_connect()
+            try:
+                old_status = conn.execute(
+                    "SELECT last_status FROM monitor_checks WHERE check_id = ?",
+                    (check_id,),
+                ).fetchone()
+                old = old_status["last_status"] if old_status else None
+
+                conn.execute(
+                    "UPDATE monitor_checks SET last_status = ?, last_result = ?, last_run_at = ? "
+                    "WHERE check_id = ?",
+                    (status, (result or "")[:500], now, check_id),
+                )
+
+                # Create alert if status changed to non-ok
+                alert_needed = False
+                if status != "ok" and old != status:
+                    conn.execute(
+                        "INSERT INTO monitor_alerts (check_id, status, message, created_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (check_id, status, f"{check['name']}: {(result or '')[:200]}", now),
+                    )
+                    alert_needed = True
+                elif status == "ok" and old and old != "ok":
+                    # Resolve alert
+                    conn.execute(
+                        "UPDATE monitor_alerts SET resolved_at = ? "
+                        "WHERE check_id = ? AND resolved_at IS NULL",
+                        (now, check_id),
+                    )
+                    alert_needed = True
+
+                conn.commit()
+                return {"alert": alert_needed, "old_status": old, "new_status": status}
+            finally:
+                conn.close()
+
+        alert_info = await asyncio.to_thread(_update)
+        return {
+            "check_id": check_id,
+            "name": check["name"],
+            "target": target,
+            "status": status,
+            "result": (result or "")[:300],
+            "alert": alert_info.get("alert", False),
+            "old_status": alert_info.get("old_status"),
+        }
+
+    async def run_all_checks(self) -> List[Dict]:
+        """Run all enabled, non-muted checks."""
+        checks = await self.get_checks()
+        results = []
+        for check in checks:
+            if check.get("muted"):
+                continue
+            try:
+                r = await self.run_check(check)
+                results.append(r)
+            except Exception as e:
+                results.append({"check_id": check["check_id"], "status": "error", "result": str(e)})
+        return results
+
+    async def get_alerts(self, active_only: bool = True, limit: int = 20) -> List[Dict]:
+        """Get recent alerts."""
+        def _query():
+            conn = _db_connect()
+            try:
+                if active_only:
+                    rows = conn.execute(
+                        "SELECT * FROM monitor_alerts WHERE resolved_at IS NULL "
+                        "ORDER BY created_at DESC LIMIT ?", (limit,)
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM monitor_alerts ORDER BY created_at DESC LIMIT ?", (limit,)
+                    ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_query)
+
+    async def mute_check(self, check_id: str, mute: bool = True):
+        """Mute/unmute a check."""
+        def _update():
+            conn = _db_connect()
+            try:
+                conn.execute("UPDATE monitor_checks SET muted = ? WHERE check_id = ?",
+                             (1 if mute else 0, check_id))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_update)
+
+    async def start_monitoring_loop(self):
+        """Start the background monitoring loop."""
+        if self._running:
+            return
+        self._running = True
+        self._task = asyncio.create_task(self._monitor_loop())
+        log.info("Monitoring loop started")
+
+    async def _monitor_loop(self):
+        """Periodic monitoring loop."""
+        while self._running:
+            try:
+                checks = await self.get_checks()
+                now = time.time()
+                for check in checks:
+                    if check.get("muted"):
+                        continue
+                    last_run = check.get("last_run_at") or 0
+                    interval = check.get("interval_seconds", 300)
+                    if now - last_run >= interval:
+                        result = await self.run_check(check)
+                        # Send alert to Slack if needed
+                        if result.get("alert") and ALERT_CHANNEL and result["status"] != "ok":
+                            icon = ":rotating_light:" if result["status"] == "critical" else ":warning:"
+                            await post_message(
+                                f"{icon} *{result['name']}* ({result['target']}): "
+                                f"`{result['status']}` \u2014 {result['result'][:150]}",
+                                ALERT_CHANNEL,
+                            )
+                        elif result.get("alert") and ALERT_CHANNEL and result["status"] == "ok":
+                            await post_message(
+                                f":white_check_mark: *{result['name']}* ({result['target']}): recovered",
+                                ALERT_CHANNEL,
+                            )
+            except Exception as e:
+                log.error(f"Monitoring loop error: {e}")
+            await asyncio.sleep(60)  # Check every 60s which checks are due
+
+    def stop(self):
+        self._running = False
+        if self._task:
+            self._task.cancel()
+
+
+monitor = MonitoringService()
+
+
+# ---------------------------------------------------------------------------
+# Scheduler Service
+# ---------------------------------------------------------------------------
+
+class SchedulerService:
+    """Job scheduler for one-off and recurring tasks."""
+
+    def __init__(self):
+        self._running = False
+        self._task: Optional[asyncio.Task] = None
+
+    async def add_job(self, job_id: str, job_type: str, payload: str,
+                      description: str = "", schedule_expression: str = None,
+                      interval_seconds: int = None, channel_id: str = "",
+                      thread_ts: str = "", owner: str = "") -> Dict:
+        """Create a scheduled job."""
+        now = time.time()
+        next_run = None
+        if interval_seconds:
+            next_run = now + interval_seconds
+        elif schedule_expression:
+            next_run = self._parse_next_run(schedule_expression, now)
+
+        def _insert():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO scheduled_jobs "
+                    "(job_id, owner, channel_id, thread_ts, job_type, description, "
+                    "payload, schedule_expression, interval_seconds, next_run_at, enabled, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+                    (job_id, owner, channel_id, thread_ts, job_type, description,
+                     payload, schedule_expression, interval_seconds, next_run, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_insert)
+        return {"job_id": job_id, "next_run_at": next_run}
+
+    async def get_jobs(self, enabled_only: bool = True) -> List[Dict]:
+        """Get all jobs."""
+        def _query():
+            conn = _db_connect()
+            try:
+                if enabled_only:
+                    rows = conn.execute(
+                        "SELECT * FROM scheduled_jobs WHERE enabled = 1 ORDER BY next_run_at"
+                    ).fetchall()
+                else:
+                    rows = conn.execute("SELECT * FROM scheduled_jobs ORDER BY next_run_at").fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_query)
+
+    async def remove_job(self, job_id: str):
+        """Remove a job."""
+        def _delete():
+            conn = _db_connect()
+            try:
+                conn.execute("DELETE FROM scheduled_jobs WHERE job_id = ?", (job_id,))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_delete)
+
+    async def toggle_job(self, job_id: str, enabled: bool):
+        """Enable/disable a job."""
+        def _update():
+            conn = _db_connect()
+            try:
+                conn.execute("UPDATE scheduled_jobs SET enabled = ? WHERE job_id = ?",
+                             (1 if enabled else 0, job_id))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_update)
+
+    def _parse_next_run(self, expression: str, now: float) -> float:
+        """Parse simple schedule expressions. Supports:
+        - 'in Xm' / 'in Xh' — relative time
+        - 'every Xm' / 'every Xh' — interval (first run = now + interval)
+        - HH:MM — next occurrence of that time today or tomorrow
+        """
+        expr = expression.strip().lower()
+        if expr.startswith("in "):
+            val = expr[3:].strip()
+            if val.endswith("m"):
+                return now + int(val[:-1]) * 60
+            elif val.endswith("h"):
+                return now + int(val[:-1]) * 3600
+            elif val.endswith("s"):
+                return now + int(val[:-1])
+        elif expr.startswith("every "):
+            val = expr[6:].strip()
+            if val.endswith("m"):
+                return now + int(val[:-1]) * 60
+            elif val.endswith("h"):
+                return now + int(val[:-1]) * 3600
+        elif ":" in expr:
+            import datetime
+            h, m = map(int, expr.split(":"))
+            today = datetime.datetime.now()
+            target = today.replace(hour=h, minute=m, second=0, microsecond=0)
+            if target.timestamp() <= now:
+                target += datetime.timedelta(days=1)
+            return target.timestamp()
+        return now + 3600  # default: 1 hour
+
+    async def start_scheduler_loop(self):
+        """Start the background scheduler loop."""
+        if self._running:
+            return
+        self._running = True
+        self._task = asyncio.create_task(self._scheduler_loop())
+        log.info("Scheduler loop started")
+
+    async def _scheduler_loop(self):
+        """Check for due jobs and execute them."""
+        while self._running:
+            try:
+                jobs = await self.get_jobs()
+                now = time.time()
+                for job in jobs:
+                    next_run = job.get("next_run_at")
+                    if next_run and now >= next_run:
+                        await self._execute_job(job)
+            except Exception as e:
+                log.error(f"Scheduler loop error: {e}")
+            await asyncio.sleep(30)  # Check every 30 seconds
+
+    async def _execute_job(self, job: Dict):
+        """Execute a scheduled job."""
+        job_id = job["job_id"]
+        job_type = job["job_type"]
+        payload = job["payload"]
+        channel = job.get("channel_id", "")
+        thread_ts = job.get("thread_ts", "")
+
+        log.info(f"Executing scheduled job: {job_id} ({job_type})")
+
+        try:
+            if job_type == "shell":
+                # payload is JSON: {"host": "...", "cmd": "..."}
+                data = json.loads(payload)
+                result = await tool_executor.execute("shell", data.get("host", "swarm-mainframe"), data["cmd"])
+                if channel:
+                    await post_message(
+                        f":clock1: *Scheduled job `{job_id}`*\n```{(result or 'done')[:1000]}```",
+                        channel, thread_ts,
+                    )
+            elif job_type == "reminder":
+                if channel:
+                    await post_message(f":bell: *Reminder:* {payload}", channel, thread_ts)
+            elif job_type == "health":
+                results = await monitor.run_all_checks()
+                if channel:
+                    lines = [":stethoscope: *Scheduled Health Check*\n"]
+                    for r in results:
+                        icon = ":white_check_mark:" if r["status"] == "ok" else ":x:" if r["status"] == "critical" else ":warning:"
+                        lines.append(f"{icon} {r['name']} ({r['target']}): `{r['status']}`")
+                    await post_message("\n".join(lines), channel, thread_ts)
+            elif job_type == "message":
+                if channel:
+                    await post_message(payload, channel, thread_ts)
+        except Exception as e:
+            log.error(f"Job {job_id} failed: {e}")
+            if channel:
+                await post_message(f":x: Scheduled job `{job_id}` failed: `{e}`", channel, thread_ts)
+
+        # Update last_run and calculate next_run
+        def _update_schedule():
+            conn = _db_connect()
+            try:
+                now = time.time()
+                interval = job.get("interval_seconds")
+                schedule_expr = job.get("schedule_expression", "")
+
+                if interval:
+                    next_run = now + interval
+                elif schedule_expr and schedule_expr.startswith("every "):
+                    next_run = self._parse_next_run(schedule_expr, now)
+                else:
+                    # One-off job — disable after execution
+                    conn.execute(
+                        "UPDATE scheduled_jobs SET last_run_at = ?, enabled = 0 WHERE job_id = ?",
+                        (now, job_id),
+                    )
+                    conn.commit()
+                    return
+
+                conn.execute(
+                    "UPDATE scheduled_jobs SET last_run_at = ?, next_run_at = ? WHERE job_id = ?",
+                    (now, next_run, job_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_update_schedule)
+
+    def stop(self):
+        self._running = False
+        if self._task:
+            self._task.cancel()
+
+
+scheduler = SchedulerService()
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Graph Service
+# ---------------------------------------------------------------------------
+
+class KnowledgeGraph:
+    """Structured graph of infrastructure entities and relationships."""
+
+    async def add_entity(self, entity_type: str, name: str,
+                         attributes: Dict = None, entity_id: str = None) -> str:
+        """Add or update an entity."""
+        eid = entity_id or f"{entity_type}:{name}".replace(" ", "-").lower()
+        now = time.time()
+        attrs_json = json.dumps(attributes or {})
+
+        def _upsert():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO graph_entities (entity_id, entity_type, name, attributes_json, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(entity_id) DO UPDATE SET name = ?, attributes_json = ?, updated_at = ?",
+                    (eid, entity_type, name, attrs_json, now, now, name, attrs_json, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_upsert)
+        return eid
+
+    async def add_edge(self, src_id: str, relation: str, dst_id: str,
+                       attributes: Dict = None) -> str:
+        """Add a relationship between entities."""
+        edge_id = f"{src_id}->{relation}->{dst_id}"
+        attrs_json = json.dumps(attributes or {})
+        now = time.time()
+
+        def _insert():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO graph_edges "
+                    "(edge_id, src_entity_id, relation, dst_entity_id, attributes_json, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (edge_id, src_id, relation, dst_id, attrs_json, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_insert)
+        return edge_id
+
+    async def log_event(self, entity_id: str, event_type: str, payload: Dict = None):
+        """Log an event for an entity."""
+        def _insert():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO graph_events (entity_id, event_type, payload_json, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (entity_id, event_type, json.dumps(payload or {}), time.time()),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_insert)
+
+    async def get_entity(self, entity_id: str) -> Optional[Dict]:
+        """Get an entity by ID."""
+        def _query():
+            conn = _db_connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM graph_entities WHERE entity_id = ?", (entity_id,)
+                ).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_query)
+
+    async def search_entities(self, query: str, entity_type: str = None, limit: int = 20) -> List[Dict]:
+        """Search entities by name or type."""
+        def _query():
+            conn = _db_connect()
+            try:
+                if entity_type:
+                    rows = conn.execute(
+                        "SELECT * FROM graph_entities WHERE entity_type = ? AND name LIKE ? LIMIT ?",
+                        (entity_type, f"%{query}%", limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM graph_entities WHERE name LIKE ? OR entity_id LIKE ? LIMIT ?",
+                        (f"%{query}%", f"%{query}%", limit),
+                    ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_query)
+
+    async def get_neighbors(self, entity_id: str) -> Dict[str, List[Dict]]:
+        """Get all connected entities (outgoing + incoming edges)."""
+        def _query():
+            conn = _db_connect()
+            try:
+                outgoing = conn.execute(
+                    "SELECT e.relation, e.dst_entity_id, g.name, g.entity_type "
+                    "FROM graph_edges e LEFT JOIN graph_entities g ON e.dst_entity_id = g.entity_id "
+                    "WHERE e.src_entity_id = ?", (entity_id,)
+                ).fetchall()
+                incoming = conn.execute(
+                    "SELECT e.relation, e.src_entity_id, g.name, g.entity_type "
+                    "FROM graph_edges e LEFT JOIN graph_entities g ON e.src_entity_id = g.entity_id "
+                    "WHERE e.dst_entity_id = ?", (entity_id,)
+                ).fetchall()
+                return {
+                    "outgoing": [dict(r) for r in outgoing],
+                    "incoming": [dict(r) for r in incoming],
+                }
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_query)
+
+    async def get_dependencies(self, entity_id: str) -> List[Dict]:
+        """Get all entities this one depends on (recursive 2 levels)."""
+        def _query():
+            conn = _db_connect()
+            try:
+                # Direct deps
+                rows = conn.execute(
+                    "SELECT e.dst_entity_id, e.relation, g.name, g.entity_type "
+                    "FROM graph_edges e LEFT JOIN graph_entities g ON e.dst_entity_id = g.entity_id "
+                    "WHERE e.src_entity_id = ? AND e.relation IN ('depends_on', 'hosted_on', 'uses')",
+                    (entity_id,),
+                ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_query)
+
+    async def get_impact(self, entity_id: str) -> List[Dict]:
+        """Get all entities that depend on this one."""
+        def _query():
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    "SELECT e.src_entity_id, e.relation, g.name, g.entity_type "
+                    "FROM graph_edges e LEFT JOIN graph_entities g ON e.src_entity_id = g.entity_id "
+                    "WHERE e.dst_entity_id = ? AND e.relation IN ('depends_on', 'hosted_on', 'uses')",
+                    (entity_id,),
+                ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_query)
+
+    async def get_recent_events(self, entity_id: str = None, limit: int = 20) -> List[Dict]:
+        """Get recent events for an entity or all entities."""
+        def _query():
+            conn = _db_connect()
+            try:
+                if entity_id:
+                    rows = conn.execute(
+                        "SELECT * FROM graph_events WHERE entity_id = ? ORDER BY created_at DESC LIMIT ?",
+                        (entity_id, limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM graph_events ORDER BY created_at DESC LIMIT ?", (limit,)
+                    ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_query)
+
+    async def seed_infrastructure(self):
+        """Seed the graph with known infrastructure entities."""
+        # VMs
+        for vm_name, vm_info in VMS.items():
+            await self.add_entity("vm", vm_name, {"ip": vm_info["ip"], "zone": vm_info["zone"]})
+
+        # Services
+        await self.add_entity("service", "bunny-alpha", {"type": "slack-bot", "port": PORT})
+        await self.add_entity("service", "ai-portal", {"type": "api", "port": 8000})
+        await self.add_entity("service", "ollama", {"type": "inference", "port": 11434})
+        await self.add_entity("service", "cloudflare-tunnel", {"type": "tunnel"})
+
+        # Providers
+        for provider in ["deepseek", "groq", "xai", "openai", "anthropic", "google", "mistral"]:
+            await self.add_entity("provider", provider)
+
+        # Assistants
+        for name in ["jack", "joyceann", "bunny-alpha"]:
+            await self.add_entity("assistant", name)
+
+        # Edges
+        await self.add_edge("service:bunny-alpha", "hosted_on", "vm:swarm-mainframe")
+        await self.add_edge("service:ai-portal", "hosted_on", "vm:fc-ai-portal")
+        await self.add_edge("service:ollama", "hosted_on", "vm:swarm-gpu")
+        await self.add_edge("service:bunny-alpha", "uses", "service:ai-portal")
+        await self.add_edge("service:bunny-alpha", "uses", "service:ollama")
+        await self.add_edge("service:ai-portal", "uses", "provider:deepseek")
+        await self.add_edge("service:ai-portal", "uses", "provider:groq")
+        await self.add_edge("service:ai-portal", "uses", "provider:xai")
+        await self.add_edge("service:ai-portal", "uses", "provider:openai")
+        await self.add_edge("service:ai-portal", "uses", "provider:anthropic")
+        await self.add_edge("service:ai-portal", "uses", "provider:google")
+        await self.add_edge("assistant:bunny-alpha", "operates", "service:bunny-alpha")
+
+        log.info("Knowledge graph seeded with infrastructure entities")
+
+
+knowledge_graph = KnowledgeGraph()
+
+
+# ---------------------------------------------------------------------------
 # AI Model Providers
 # ---------------------------------------------------------------------------
 
@@ -1445,6 +2268,11 @@ SLASH_COMMANDS = {
     "model": "Switch active model (e.g. /model gpt5, /model claude)",
     "logs": "Show recent Bunny Alpha logs",
     "health": "Run health check on all services",
+    "monitor": "Monitoring checks (/monitor list|run|mute|unmute|alerts)",
+    "schedule": "Schedule a job (/schedule reminder|shell|health ...)",
+    "jobs": "List scheduled jobs",
+    "unschedule": "Remove a scheduled job (/unschedule <id>)",
+    "graph": "Knowledge graph (/graph entity|deps|impact|recent|search)",
     "memory": "Show persistent memory stats (/memory search <query>)",
     "forget": "Clear memory (/forget, /forget all, /forget thread, /forget channel)",
     "pref": "Set/get preferences (/pref key value, /pref key, /pref)",
@@ -1714,18 +2542,240 @@ async def handle_slash_command(cmd: str, args: str, channel: str, thread_ts: str
         return True
 
     if cmd == "health":
-        group_id = uuid.uuid4().hex[:8]
-        commands = [
-            ("shell", "swarm-mainframe", "systemctl is-active bunny-alpha docker"),
-            ("shell", "swarm-mainframe", "docker ps --filter 'status=running' --format '{{.Names}}: {{.Status}}'"),
-            ("http", "local", "GET http://localhost:8090/health"),
-            ("shell", "swarm-gpu", "systemctl is-active ollama 2>/dev/null || curl -s http://localhost:11434/api/tags > /dev/null && echo 'ollama: active' || echo 'ollama: inactive'"),
-            ("shell", "swarm-mainframe", "curl -s http://localhost:8080/health 2>/dev/null || echo 'SWARM: not responding'"),
-        ]
-        for tool, host, c in commands:
-            task_manager.create_task(tool, host, c, channel, thread_ts, group_id)
-        tasks = await task_manager.execute_group(group_id, channel, thread_ts)
-        await _post_task_results(tasks, channel, thread_ts, "Health Check")
+        # Run monitoring checks
+        results = await monitor.run_all_checks()
+        if not results:
+            await post_message(":stethoscope: No health checks configured.", channel, thread_ts)
+            return True
+        lines = [":stethoscope: *System Health Check*\n"]
+        ok = warning = critical = 0
+        for r in results:
+            icon = ":white_check_mark:" if r["status"] == "ok" else ":x:" if r["status"] == "critical" else ":warning:"
+            lines.append(f"{icon} *{r['name']}* ({r['target']}): `{r['status']}`")
+            if r["result"] and r["status"] != "ok":
+                lines.append(f"   {r['result'][:100]}")
+            if r["status"] == "ok":
+                ok += 1
+            elif r["status"] == "critical":
+                critical += 1
+            else:
+                warning += 1
+        lines.append(f"\n_Summary: {ok} ok, {warning} warning, {critical} critical_")
+        await post_message("\n".join(lines), channel, thread_ts)
+        return True
+
+    if cmd == "monitor":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "list"
+
+        if subcmd == "list":
+            checks = await monitor.get_checks(enabled_only=False)
+            lines = [":satellite: *Monitoring Checks*\n"]
+            for c in checks:
+                icon = ":white_check_mark:" if c.get("last_status") == "ok" else ":x:" if c.get("last_status") == "critical" else ":grey_question:"
+                muted = " (muted)" if c.get("muted") else ""
+                disabled = " (disabled)" if not c.get("enabled") else ""
+                lines.append(f"{icon} `{c['check_id']}` {c['name']} — {c['target']}{muted}{disabled}")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "run" and len(sub) > 1:
+            check_id = sub[1].strip()
+            checks = await monitor.get_checks(enabled_only=False)
+            check = next((c for c in checks if c["check_id"] == check_id), None)
+            if check:
+                result = await monitor.run_check(check)
+                icon = ":white_check_mark:" if result["status"] == "ok" else ":x:"
+                await post_message(
+                    f"{icon} *{result['name']}*: `{result['status']}`\n```{result['result'][:500]}```",
+                    channel, thread_ts,
+                )
+            else:
+                await post_message(f":warning: Check `{check_id}` not found.", channel, thread_ts)
+
+        elif subcmd == "mute" and len(sub) > 1:
+            await monitor.mute_check(sub[1].strip(), True)
+            await post_message(f":mute: Check `{sub[1].strip()}` muted.", channel, thread_ts)
+
+        elif subcmd == "unmute" and len(sub) > 1:
+            await monitor.mute_check(sub[1].strip(), False)
+            await post_message(f":loud_sound: Check `{sub[1].strip()}` unmuted.", channel, thread_ts)
+
+        elif subcmd == "alerts":
+            alerts = await monitor.get_alerts(active_only=True)
+            if alerts:
+                lines = [":bell: *Active Alerts*\n"]
+                import datetime
+                for a in alerts:
+                    ts = datetime.datetime.fromtimestamp(a["created_at"]).strftime("%m/%d %H:%M")
+                    lines.append(f":rotating_light: `{a['check_id']}` [{a['status']}] {a['message'][:100]} ({ts})")
+                await post_message("\n".join(lines), channel, thread_ts)
+            else:
+                await post_message(":white_check_mark: No active alerts.", channel, thread_ts)
+        else:
+            await post_message(
+                ":satellite: */monitor* commands: `list`, `run <id>`, `mute <id>`, `unmute <id>`, `alerts`",
+                channel, thread_ts,
+            )
+        return True
+
+    # -- Scheduler commands --
+    if cmd == "schedule":
+        parts = args.strip().split(maxsplit=2)
+        if len(parts) < 2:
+            await post_message(
+                ":clock1: Usage:\n"
+                "\u2022 `/schedule reminder in 5m Take a break`\n"
+                "\u2022 `/schedule shell every 10m {\"host\":\"swarm-gpu\",\"cmd\":\"nvidia-smi\"}`\n"
+                "\u2022 `/schedule health every 30m`",
+                channel, thread_ts,
+            )
+            return True
+        job_type = parts[0].lower()
+        rest = parts[1] if len(parts) > 1 else ""
+
+        # Parse schedule expression and payload
+        schedule_expr = None
+        interval_seconds = None
+        payload = rest
+
+        # Try to extract timing: "in 5m ...", "every 10m ...", "at 17:00 ..."
+        time_match = re.match(r'(in \d+[mhs]|every \d+[mhs]|at \d{1,2}:\d{2})\s*(.*)', rest, re.IGNORECASE)
+        if time_match:
+            schedule_expr = time_match.group(1).strip()
+            payload = time_match.group(2).strip() if time_match.group(2) else ""
+
+            # Parse interval for recurring
+            if schedule_expr.startswith("every "):
+                val = schedule_expr[6:].strip()
+                if val.endswith("m"):
+                    interval_seconds = int(val[:-1]) * 60
+                elif val.endswith("h"):
+                    interval_seconds = int(val[:-1]) * 3600
+
+        if not payload and job_type != "health":
+            payload = "scheduled task"
+
+        job_id = f"{job_type}-{uuid.uuid4().hex[:6]}"
+        result = await scheduler.add_job(
+            job_id=job_id, job_type=job_type, payload=payload,
+            description=f"{job_type}: {payload[:50]}",
+            schedule_expression=schedule_expr,
+            interval_seconds=interval_seconds,
+            channel_id=channel, thread_ts=thread_ts,
+        )
+        import datetime
+        next_str = datetime.datetime.fromtimestamp(result["next_run_at"]).strftime("%H:%M:%S") if result["next_run_at"] else "now"
+        recur = " (recurring)" if interval_seconds else " (one-off)"
+        await post_message(
+            f":white_check_mark: Job `{job_id}` scheduled{recur}\nNext run: {next_str}",
+            channel, thread_ts,
+        )
+        return True
+
+    if cmd == "jobs":
+        jobs = await scheduler.get_jobs(enabled_only=False)
+        if not jobs:
+            await post_message(":clock1: No scheduled jobs.", channel, thread_ts)
+            return True
+        import datetime
+        lines = [":clock1: *Scheduled Jobs*\n"]
+        for j in jobs:
+            enabled = ":green_circle:" if j.get("enabled") else ":red_circle:"
+            next_run = datetime.datetime.fromtimestamp(j["next_run_at"]).strftime("%m/%d %H:%M") if j.get("next_run_at") else "—"
+            desc = j.get("description", j["job_type"])[:50]
+            lines.append(f"{enabled} `{j['job_id']}` {desc} | next: {next_run}")
+        await post_message("\n".join(lines), channel, thread_ts)
+        return True
+
+    if cmd == "unschedule":
+        job_id = args.strip()
+        if not job_id:
+            await post_message(":warning: Usage: `/unschedule <job_id>`", channel, thread_ts)
+            return True
+        await scheduler.remove_job(job_id)
+        await post_message(f":wastebasket: Job `{job_id}` removed.", channel, thread_ts)
+        return True
+
+    # -- Knowledge Graph commands --
+    if cmd == "graph":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "help"
+        query = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "entity" and query:
+            entity = await knowledge_graph.get_entity(query)
+            if not entity:
+                entities = await knowledge_graph.search_entities(query, limit=5)
+                if entities:
+                    entity = entities[0]
+            if entity:
+                attrs = json.loads(entity.get("attributes_json", "{}"))
+                lines = [f":globe_with_meridians: *{entity['name']}* ({entity['entity_type']})"]
+                if attrs:
+                    for k, v in attrs.items():
+                        lines.append(f"  `{k}`: {v}")
+                neighbors = await knowledge_graph.get_neighbors(entity["entity_id"])
+                if neighbors["outgoing"]:
+                    lines.append("*Outgoing:*")
+                    for n in neighbors["outgoing"]:
+                        lines.append(f"  \u2192 {n['relation']} \u2192 {n.get('name', n.get('dst_entity_id', '?'))}")
+                if neighbors["incoming"]:
+                    lines.append("*Incoming:*")
+                    for n in neighbors["incoming"]:
+                        lines.append(f"  \u2190 {n.get('name', n.get('src_entity_id', '?'))} \u2192 {n['relation']}")
+                await post_message("\n".join(lines), channel, thread_ts)
+            else:
+                await post_message(f":warning: Entity `{query}` not found.", channel, thread_ts)
+
+        elif subcmd == "deps" and query:
+            deps = await knowledge_graph.get_dependencies(query)
+            if deps:
+                lines = [f":link: *Dependencies of `{query}`*\n"]
+                for d in deps:
+                    lines.append(f"  \u2192 {d['relation']} \u2192 {d.get('name', d.get('dst_entity_id', '?'))} ({d.get('entity_type', '?')})")
+                await post_message("\n".join(lines), channel, thread_ts)
+            else:
+                await post_message(f":link: No dependencies found for `{query}`.", channel, thread_ts)
+
+        elif subcmd == "impact" and query:
+            impact = await knowledge_graph.get_impact(query)
+            if impact:
+                lines = [f":boom: *Impact analysis for `{query}`*\n"]
+                for i in impact:
+                    lines.append(f"  \u2190 {i.get('name', i.get('src_entity_id', '?'))} ({i.get('entity_type', '?')})")
+                await post_message("\n".join(lines), channel, thread_ts)
+            else:
+                await post_message(f":boom: Nothing depends on `{query}`.", channel, thread_ts)
+
+        elif subcmd == "recent":
+            entity_id = query if query else None
+            events = await knowledge_graph.get_recent_events(entity_id, limit=15)
+            if events:
+                import datetime
+                lines = [f":scroll: *Recent Events*" + (f" for `{query}`" if query else "") + "\n"]
+                for e in events:
+                    ts = datetime.datetime.fromtimestamp(e["created_at"]).strftime("%m/%d %H:%M")
+                    lines.append(f"`{ts}` [{e['event_type']}] {e['entity_id']}")
+                await post_message("\n".join(lines), channel, thread_ts)
+            else:
+                await post_message(":scroll: No recent events.", channel, thread_ts)
+
+        elif subcmd == "search" and query:
+            results = await knowledge_graph.search_entities(query)
+            if results:
+                lines = [f":mag: *Graph search: `{query}`* ({len(results)} results)\n"]
+                for r in results:
+                    lines.append(f"  `{r['entity_id']}` — {r['name']} ({r['entity_type']})")
+                await post_message("\n".join(lines), channel, thread_ts)
+            else:
+                await post_message(f":mag: No entities match `{query}`.", channel, thread_ts)
+
+        else:
+            await post_message(
+                ":globe_with_meridians: */graph* commands: `entity <name>`, `deps <entity>`, "
+                "`impact <entity>`, `recent [entity]`, `search <query>`",
+                channel, thread_ts,
+            )
         return True
 
     return False
@@ -2128,10 +3178,27 @@ async def on_startup(app: web.Application):
     except Exception as e:
         log.warning(f"Memory stats unavailable: {e}")
 
+    # Seed monitoring defaults and knowledge graph
+    try:
+        seeded = await monitor.seed_defaults()
+        if seeded:
+            log.info(f"Seeded {seeded} default monitoring checks")
+        checks = await monitor.get_checks()
+        log.info(f"Monitoring: {len(checks)} active checks")
+    except Exception as e:
+        log.warning(f"Monitoring init error: {e}")
+
+    try:
+        await knowledge_graph.seed_infrastructure()
+    except Exception as e:
+        log.warning(f"Knowledge graph seed error: {e}")
+
     log.info(f"Listening on port {PORT}")
 
-    # Start periodic cleanup
+    # Start background services
     asyncio.create_task(_periodic_cleanup())
+    await monitor.start_monitoring_loop()
+    await scheduler.start_scheduler_loop()
 
 
 async def _periodic_cleanup():
@@ -2144,6 +3211,8 @@ async def _periodic_cleanup():
 async def on_cleanup(app: web.Application):
     """Cleanup on shutdown."""
     global _session
+    monitor.stop()
+    scheduler.stop()
     if _session:
         await _session.close()
         _session = None
