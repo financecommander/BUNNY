@@ -254,6 +254,41 @@
       "file": "BSA-39-digital-twin-identity.md",
       "status": "active",
       "description": "Defines personal identity modeling, reputation awareness, and persistent digital representation"
+    },
+    {
+      "id": "BSA-40",
+      "name": "Persistent AI Presence & Ambient Intelligence",
+      "file": "BSA-40-ambient-intelligence.md",
+      "status": "active",
+      "description": "Defines continuous assistance, context awareness, and proactive intelligence"
+    },
+    {
+      "id": "BSA-41",
+      "name": "Human-AI Collaboration Governance",
+      "file": "BSA-41-human-ai-collaboration-governance.md",
+      "status": "active",
+      "description": "Defines oversight framework, decision boundaries, delegation rules, and ethical AI operations"
+    },
+    {
+      "id": "BSA-42",
+      "name": "Global Swarm Network & Federation",
+      "file": "BSA-42-global-swarm-federation.md",
+      "status": "active",
+      "description": "Defines cross-swarm networking, federation protocols, and distributed intelligence collaboration"
+    },
+    {
+      "id": "BSA-43",
+      "name": "Swarm Economic & Incentive Layer",
+      "file": "BSA-43-swarm-economic-incentive.md",
+      "status": "active",
+      "description": "Defines resource incentives, compute contribution, agent economy, and value exchange"
+    },
+    {
+      "id": "BSA-44",
+      "name": "Global Swarm Governance & Constitutional Layer",
+      "file": "BSA-44-global-governance-constitutional.md",
+      "status": "active",
+      "description": "Defines system rules, ethical boundaries, policy enforcement, and dispute resolution"
     }
   ]
 }
