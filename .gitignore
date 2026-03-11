@@ -1,3 +1,5 @@
 
 # Claude Code
 .claude/
+target/
+tools/__pycache__/
