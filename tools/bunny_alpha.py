@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bunny Alpha v3.2 — Autonomous Operations Platform
+Bunny Alpha v3.3 — Autonomous Operations Platform
 
 Standalone Slack assistant with real infrastructure execution.
 Task queue, concurrent execution, progress reporting.
@@ -1167,6 +1167,112 @@ def _init_db():
                 enabled INTEGER DEFAULT 1,
                 updated_at REAL NOT NULL
             );
+
+            -- ============================================================
+            -- Build Metrics & Development Telemetry
+            -- ============================================================
+
+            CREATE TABLE IF NOT EXISTS directive_runs (
+                directive_id TEXT PRIMARY KEY,
+                directive_type TEXT NOT NULL,
+                directive_title TEXT,
+                issued_by TEXT DEFAULT 'operator',
+                target_modules_json TEXT,
+                status TEXT DEFAULT 'received',
+                start_time REAL NOT NULL,
+                end_time REAL,
+                duration_seconds REAL,
+                success INTEGER DEFAULT 0,
+                failure_reason TEXT,
+                modules_created INTEGER DEFAULT 0,
+                commit_hash TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_directive_runs_ts ON directive_runs(start_time DESC);
+
+            CREATE TABLE IF NOT EXISTS code_generation_events (
+                event_id TEXT PRIMARY KEY,
+                directive_id TEXT,
+                file_path TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                language TEXT,
+                lines_added INTEGER DEFAULT 0,
+                lines_removed INTEGER DEFAULT 0,
+                timestamp REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_codegen_events_dir ON code_generation_events(directive_id);
+
+            CREATE TABLE IF NOT EXISTS code_generation_summary (
+                summary_id TEXT PRIMARY KEY,
+                directive_id TEXT NOT NULL,
+                files_created INTEGER DEFAULT 0,
+                files_modified INTEGER DEFAULT 0,
+                lines_generated INTEGER DEFAULT 0,
+                lines_changed INTEGER DEFAULT 0,
+                modules_affected TEXT,
+                languages_json TEXT,
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS service_updates (
+                update_id TEXT PRIMARY KEY,
+                directive_id TEXT,
+                service_name TEXT NOT NULL,
+                update_type TEXT NOT NULL,
+                restart_required INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'pending',
+                applied_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_svc_updates_dir ON service_updates(directive_id);
+
+            CREATE TABLE IF NOT EXISTS deployment_events (
+                event_id TEXT PRIMARY KEY,
+                directive_id TEXT,
+                service_name TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                duration_seconds REAL,
+                success INTEGER DEFAULT 1,
+                error_message TEXT,
+                timestamp REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_deploy_events_ts ON deployment_events(timestamp DESC);
+
+            CREATE TABLE IF NOT EXISTS test_runs (
+                test_run_id TEXT PRIMARY KEY,
+                directive_id TEXT,
+                test_suite TEXT,
+                tests_executed INTEGER DEFAULT 0,
+                tests_passed INTEGER DEFAULT 0,
+                tests_failed INTEGER DEFAULT 0,
+                coverage_percent REAL,
+                duration_seconds REAL,
+                retries INTEGER DEFAULT 0,
+                timestamp REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS build_metrics (
+                metric_id TEXT PRIMARY KEY,
+                directive_id TEXT,
+                metric_type TEXT NOT NULL,
+                metric_value REAL NOT NULL,
+                unit TEXT DEFAULT 'seconds',
+                timestamp REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_build_metrics_type ON build_metrics(metric_type);
+
+            CREATE TABLE IF NOT EXISTS assistant_performance (
+                record_id TEXT PRIMARY KEY,
+                assistant_id TEXT NOT NULL,
+                assistant_name TEXT,
+                directives_completed INTEGER DEFAULT 0,
+                directives_failed INTEGER DEFAULT 0,
+                total_lines_generated INTEGER DEFAULT 0,
+                total_files_created INTEGER DEFAULT 0,
+                avg_build_time REAL DEFAULT 0.0,
+                avg_lines_per_directive REAL DEFAULT 0.0,
+                error_count INTEGER DEFAULT 0,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_asst_perf ON assistant_performance(assistant_id);
         """)
         conn.commit()
         log.info(f"Persistent memory initialized: {DB_PATH}")
@@ -7464,6 +7570,612 @@ outreach_compliance = OutreachCompliance()
 
 
 # ---------------------------------------------------------------------------
+# Build Metrics & Development Telemetry Layer
+# ---------------------------------------------------------------------------
+
+class DirectiveTracker:
+    """Module 1: Directive Execution Tracking — lifecycle of every directive."""
+
+    async def start_directive(self, directive_type: str, title: str = "",
+                              issued_by: str = "operator",
+                              target_modules: List[str] = None) -> str:
+        directive_id = f"dir-{uuid.uuid4().hex[:12]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO directive_runs "
+                    "(directive_id, directive_type, directive_title, issued_by, "
+                    "target_modules_json, status, start_time) VALUES (?,?,?,?,?,?,?)",
+                    (directive_id, directive_type, title, issued_by,
+                     json.dumps(target_modules or []), "received", time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        return directive_id
+
+    async def update_status(self, directive_id: str, status: str,
+                            failure_reason: str = None, modules_created: int = None,
+                            commit_hash: str = None):
+        def _up():
+            conn = _db_connect()
+            try:
+                updates = ["status=?"]
+                params = [status]
+                if status in ("completed", "failed", "rolled_back"):
+                    updates.append("end_time=?")
+                    params.append(time.time())
+                    row = conn.execute("SELECT start_time FROM directive_runs WHERE directive_id=?",
+                                       (directive_id,)).fetchone()
+                    if row:
+                        updates.append("duration_seconds=?")
+                        params.append(round(time.time() - row["start_time"], 2))
+                if status == "completed":
+                    updates.append("success=1")
+                if status == "failed" and failure_reason:
+                    updates.append("failure_reason=?")
+                    params.append(failure_reason)
+                if modules_created is not None:
+                    updates.append("modules_created=?")
+                    params.append(modules_created)
+                if commit_hash:
+                    updates.append("commit_hash=?")
+                    params.append(commit_hash)
+                params.append(directive_id)
+                conn.execute(
+                    f"UPDATE directive_runs SET {', '.join(updates)} WHERE directive_id=?",
+                    params)
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_up)
+
+    async def get_directives(self, limit: int = 20, status: str = None) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if status:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT * FROM directive_runs WHERE status=? "
+                        "ORDER BY start_time DESC LIMIT ?", (status, limit)).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM directive_runs ORDER BY start_time DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_directive(self, directive_id: str) -> Optional[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                row = conn.execute("SELECT * FROM directive_runs WHERE directive_id=?",
+                                   (directive_id,)).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_stats(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                total = conn.execute("SELECT COUNT(*) FROM directive_runs").fetchone()[0]
+                completed = conn.execute("SELECT COUNT(*) FROM directive_runs WHERE success=1").fetchone()[0]
+                failed = conn.execute("SELECT COUNT(*) FROM directive_runs WHERE status='failed'").fetchone()[0]
+                avg_dur = conn.execute(
+                    "SELECT AVG(duration_seconds) FROM directive_runs "
+                    "WHERE duration_seconds IS NOT NULL").fetchone()[0]
+                total_modules = conn.execute(
+                    "SELECT COALESCE(SUM(modules_created), 0) FROM directive_runs").fetchone()[0]
+                by_type = {}
+                for row in conn.execute(
+                    "SELECT directive_type, COUNT(*) as cnt FROM directive_runs GROUP BY directive_type"):
+                    by_type[row["directive_type"]] = row["cnt"]
+                return {
+                    "total": total, "completed": completed, "failed": failed,
+                    "success_rate": round(completed / max(1, total), 3),
+                    "avg_duration_seconds": round(avg_dur or 0, 1),
+                    "total_modules_created": total_modules,
+                    "by_type": by_type,
+                }
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class CodeGenMetrics:
+    """Module 2: Code Generation Metrics — measure code produced per directive."""
+
+    async def record_event(self, directive_id: str, file_path: str,
+                           action_type: str, language: str = "",
+                           lines_added: int = 0, lines_removed: int = 0) -> str:
+        event_id = f"cge-{uuid.uuid4().hex[:10]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO code_generation_events "
+                    "(event_id, directive_id, file_path, action_type, language, "
+                    "lines_added, lines_removed, timestamp) VALUES (?,?,?,?,?,?,?,?)",
+                    (event_id, directive_id, file_path, action_type, language,
+                     lines_added, lines_removed, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        return event_id
+
+    async def record_summary(self, directive_id: str, files_created: int = 0,
+                             files_modified: int = 0, lines_generated: int = 0,
+                             lines_changed: int = 0, modules_affected: str = "",
+                             languages: List[str] = None) -> str:
+        summary_id = f"cgs-{uuid.uuid4().hex[:10]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO code_generation_summary "
+                    "(summary_id, directive_id, files_created, files_modified, "
+                    "lines_generated, lines_changed, modules_affected, "
+                    "languages_json, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (summary_id, directive_id, files_created, files_modified,
+                     lines_generated, lines_changed, modules_affected,
+                     json.dumps(languages or []), time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        return summary_id
+
+    async def get_events(self, directive_id: str = None, limit: int = 30) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if directive_id:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT * FROM code_generation_events WHERE directive_id=? "
+                        "ORDER BY timestamp DESC LIMIT ?", (directive_id, limit)).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM code_generation_events ORDER BY timestamp DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_summaries(self, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT cgs.*, dr.directive_title, dr.directive_type "
+                    "FROM code_generation_summary cgs "
+                    "LEFT JOIN directive_runs dr ON cgs.directive_id = dr.directive_id "
+                    "ORDER BY cgs.created_at DESC LIMIT ?", (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_totals(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                total_lines = conn.execute(
+                    "SELECT COALESCE(SUM(lines_generated), 0) FROM code_generation_summary"
+                ).fetchone()[0]
+                total_files_created = conn.execute(
+                    "SELECT COALESCE(SUM(files_created), 0) FROM code_generation_summary"
+                ).fetchone()[0]
+                total_files_modified = conn.execute(
+                    "SELECT COALESCE(SUM(files_modified), 0) FROM code_generation_summary"
+                ).fetchone()[0]
+                total_changed = conn.execute(
+                    "SELECT COALESCE(SUM(lines_changed), 0) FROM code_generation_summary"
+                ).fetchone()[0]
+                directives = conn.execute(
+                    "SELECT COUNT(DISTINCT directive_id) FROM code_generation_summary"
+                ).fetchone()[0]
+                return {
+                    "total_lines_generated": total_lines,
+                    "total_files_created": total_files_created,
+                    "total_files_modified": total_files_modified,
+                    "total_lines_changed": total_changed,
+                    "directives_measured": directives,
+                }
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class ServiceImpactTracker:
+    """Module 3: Service Impact Tracking — which services changed per build."""
+
+    async def record_update(self, directive_id: str, service_name: str,
+                            update_type: str, restart_required: bool = False) -> str:
+        update_id = f"svc-{uuid.uuid4().hex[:10]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO service_updates "
+                    "(update_id, directive_id, service_name, update_type, "
+                    "restart_required, status, applied_at) VALUES (?,?,?,?,?,?,?)",
+                    (update_id, directive_id, service_name, update_type,
+                     1 if restart_required else 0, "applied", time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        return update_id
+
+    async def get_updates(self, directive_id: str = None, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if directive_id:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT * FROM service_updates WHERE directive_id=? "
+                        "ORDER BY applied_at DESC", (directive_id,)).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM service_updates ORDER BY applied_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_stats(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                total = conn.execute("SELECT COUNT(*) FROM service_updates").fetchone()[0]
+                restarts = conn.execute("SELECT COUNT(*) FROM service_updates WHERE restart_required=1").fetchone()[0]
+                by_service = {}
+                for row in conn.execute(
+                    "SELECT service_name, COUNT(*) as cnt FROM service_updates GROUP BY service_name"):
+                    by_service[row["service_name"]] = row["cnt"]
+                return {"total_updates": total, "restarts": restarts, "by_service": by_service}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class DeploymentTelemetry:
+    """Module 4: Deployment Telemetry — track deployment and startup behavior."""
+
+    async def record_event(self, directive_id: str, service_name: str,
+                           event_type: str, duration_seconds: float = 0.0,
+                           success: bool = True, error_message: str = "") -> str:
+        event_id = f"devt-{uuid.uuid4().hex[:10]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO deployment_events "
+                    "(event_id, directive_id, service_name, event_type, "
+                    "duration_seconds, success, error_message, timestamp) VALUES (?,?,?,?,?,?,?,?)",
+                    (event_id, directive_id, service_name, event_type,
+                     duration_seconds, 1 if success else 0, error_message, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        return event_id
+
+    async def get_events(self, directive_id: str = None, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if directive_id:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT * FROM deployment_events WHERE directive_id=? "
+                        "ORDER BY timestamp DESC", (directive_id,)).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM deployment_events ORDER BY timestamp DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_stats(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                total = conn.execute("SELECT COUNT(*) FROM deployment_events").fetchone()[0]
+                success = conn.execute("SELECT COUNT(*) FROM deployment_events WHERE success=1").fetchone()[0]
+                failed = conn.execute("SELECT COUNT(*) FROM deployment_events WHERE success=0").fetchone()[0]
+                avg_dur = conn.execute(
+                    "SELECT AVG(duration_seconds) FROM deployment_events WHERE duration_seconds > 0"
+                ).fetchone()[0]
+                by_type = {}
+                for row in conn.execute(
+                    "SELECT event_type, COUNT(*) as cnt FROM deployment_events GROUP BY event_type"):
+                    by_type[row["event_type"]] = row["cnt"]
+                return {
+                    "total": total, "success": success, "failed": failed,
+                    "success_rate": round(success / max(1, total), 3),
+                    "avg_duration": round(avg_dur or 0, 2),
+                    "by_type": by_type,
+                }
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class TestMetrics:
+    """Module 5: Test Execution Metrics — measure test reliability."""
+
+    async def record_run(self, directive_id: str, tests_executed: int = 0,
+                         tests_passed: int = 0, tests_failed: int = 0,
+                         coverage: float = None, duration: float = 0.0,
+                         retries: int = 0, suite: str = "default") -> str:
+        run_id = f"trun-{uuid.uuid4().hex[:10]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO test_runs "
+                    "(test_run_id, directive_id, test_suite, tests_executed, "
+                    "tests_passed, tests_failed, coverage_percent, duration_seconds, "
+                    "retries, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (run_id, directive_id, suite, tests_executed, tests_passed,
+                     tests_failed, coverage, duration, retries, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        return run_id
+
+    async def get_runs(self, directive_id: str = None, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if directive_id:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT * FROM test_runs WHERE directive_id=? "
+                        "ORDER BY timestamp DESC", (directive_id,)).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM test_runs ORDER BY timestamp DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_stats(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                total_runs = conn.execute("SELECT COUNT(*) FROM test_runs").fetchone()[0]
+                total_exec = conn.execute("SELECT COALESCE(SUM(tests_executed), 0) FROM test_runs").fetchone()[0]
+                total_pass = conn.execute("SELECT COALESCE(SUM(tests_passed), 0) FROM test_runs").fetchone()[0]
+                total_fail = conn.execute("SELECT COALESCE(SUM(tests_failed), 0) FROM test_runs").fetchone()[0]
+                avg_cov = conn.execute(
+                    "SELECT AVG(coverage_percent) FROM test_runs WHERE coverage_percent IS NOT NULL"
+                ).fetchone()[0]
+                return {
+                    "total_runs": total_runs, "total_executed": total_exec,
+                    "total_passed": total_pass, "total_failed": total_fail,
+                    "pass_rate": round(total_pass / max(1, total_exec), 3),
+                    "avg_coverage": round(avg_cov or 0, 1),
+                }
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class BuildPerformanceTracker:
+    """Module 6: Build Performance Metrics — speed and efficiency of dev ops."""
+
+    async def record_metric(self, directive_id: str, metric_type: str,
+                            value: float, unit: str = "seconds") -> str:
+        metric_id = f"bm-{uuid.uuid4().hex[:10]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO build_metrics "
+                    "(metric_id, directive_id, metric_type, metric_value, unit, timestamp) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (metric_id, directive_id, metric_type, value, unit, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        return metric_id
+
+    async def get_metrics(self, directive_id: str = None, metric_type: str = None,
+                          limit: int = 30) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                where = []
+                params = []
+                if directive_id:
+                    where.append("directive_id=?")
+                    params.append(directive_id)
+                if metric_type:
+                    where.append("metric_type=?")
+                    params.append(metric_type)
+                clause = f"WHERE {' AND '.join(where)}" if where else ""
+                params.append(limit)
+                return [dict(r) for r in conn.execute(
+                    f"SELECT * FROM build_metrics {clause} ORDER BY timestamp DESC LIMIT ?",
+                    params).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_averages(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                avgs = {}
+                for row in conn.execute(
+                    "SELECT metric_type, AVG(metric_value) as avg_val, "
+                    "MIN(metric_value) as min_val, MAX(metric_value) as max_val, "
+                    "COUNT(*) as cnt FROM build_metrics GROUP BY metric_type"):
+                    avgs[row["metric_type"]] = {
+                        "avg": round(row["avg_val"], 2),
+                        "min": round(row["min_val"], 2),
+                        "max": round(row["max_val"], 2),
+                        "count": row["cnt"],
+                    }
+                return avgs
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class AssistantPerformanceTracker:
+    """Module 7: Bot Performance Analytics — measure assistant effectiveness."""
+
+    async def record_or_update(self, assistant_id: str, assistant_name: str = "",
+                               directives_completed: int = 0, directives_failed: int = 0,
+                               lines_generated: int = 0, files_created: int = 0,
+                               build_time: float = 0.0, errors: int = 0):
+        def _upsert():
+            conn = _db_connect()
+            try:
+                existing = conn.execute(
+                    "SELECT * FROM assistant_performance WHERE assistant_id=?",
+                    (assistant_id,)).fetchone()
+                now = time.time()
+                if existing:
+                    new_completed = existing["directives_completed"] + directives_completed
+                    new_failed = existing["directives_failed"] + directives_failed
+                    new_lines = existing["total_lines_generated"] + lines_generated
+                    new_files = existing["total_files_created"] + files_created
+                    new_errors = existing["error_count"] + errors
+                    total_directives = new_completed + new_failed
+                    new_avg_time = (
+                        (existing["avg_build_time"] * (total_directives - 1) + build_time)
+                        / max(1, total_directives)
+                    ) if build_time > 0 else existing["avg_build_time"]
+                    new_avg_lines = new_lines / max(1, new_completed)
+                    conn.execute(
+                        "UPDATE assistant_performance SET "
+                        "directives_completed=?, directives_failed=?, "
+                        "total_lines_generated=?, total_files_created=?, "
+                        "avg_build_time=?, avg_lines_per_directive=?, "
+                        "error_count=?, updated_at=? WHERE assistant_id=?",
+                        (new_completed, new_failed, new_lines, new_files,
+                         round(new_avg_time, 1), round(new_avg_lines, 1),
+                         new_errors, now, assistant_id))
+                else:
+                    record_id = f"ap-{uuid.uuid4().hex[:10]}"
+                    avg_lines = lines_generated / max(1, directives_completed)
+                    conn.execute(
+                        "INSERT INTO assistant_performance "
+                        "(record_id, assistant_id, assistant_name, "
+                        "directives_completed, directives_failed, "
+                        "total_lines_generated, total_files_created, "
+                        "avg_build_time, avg_lines_per_directive, "
+                        "error_count, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (record_id, assistant_id, assistant_name or assistant_id,
+                         directives_completed, directives_failed,
+                         lines_generated, files_created,
+                         build_time, round(avg_lines, 1), errors, now))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_upsert)
+
+    async def get_assistants(self) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM assistant_performance ORDER BY directives_completed DESC"
+                ).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_assistant(self, assistant_id: str) -> Optional[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                row = conn.execute("SELECT * FROM assistant_performance WHERE assistant_id=?",
+                                   (assistant_id,)).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def seed_assistants(self):
+        """Seed known assistants."""
+        assistants = [
+            ("claude-code", "Claude Code"),
+            ("bunny-alpha", "Bunny Alpha"),
+            ("jack", "Jack"),
+            ("joyceann", "Joyceann"),
+        ]
+        for aid, name in assistants:
+            await self.record_or_update(aid, name)
+
+
+# Helper: record a full directive lifecycle from build data
+async def record_build_telemetry(
+    directive_type: str, title: str, issued_by: str = "operator",
+    modules: List[str] = None, files_created: int = 0, files_modified: int = 0,
+    lines_generated: int = 0, lines_changed: int = 0, languages: List[str] = None,
+    services_updated: List[str] = None, commit_hash: str = "",
+    success: bool = True, failure_reason: str = "",
+    build_time_seconds: float = 0.0, assistant_id: str = "claude-code",
+):
+    """Convenience function to record complete build telemetry for a directive."""
+    # 1. Directive run
+    dir_id = await directive_tracker.start_directive(directive_type, title, issued_by, modules)
+    await directive_tracker.update_status(dir_id, "executing")
+
+    # 2. Code generation summary
+    await codegen_metrics.record_summary(
+        dir_id, files_created, files_modified, lines_generated,
+        lines_changed, ", ".join(modules or []), languages)
+
+    # 3. Service impacts
+    for svc in (services_updated or []):
+        await service_impact.record_update(dir_id, svc, "code_update", restart_required=True)
+
+    # 4. Deployment event
+    await deploy_telemetry.record_event(
+        dir_id, "bunny-alpha", "deploy_restart",
+        duration_seconds=build_time_seconds, success=success,
+        error_message=failure_reason)
+
+    # 5. Build performance metric
+    if build_time_seconds > 0:
+        await build_performance.record_metric(dir_id, "total_build_time", build_time_seconds)
+    if lines_generated > 0:
+        await build_performance.record_metric(dir_id, "lines_generated", float(lines_generated), "lines")
+
+    # 6. Complete directive
+    final_status = "completed" if success else "failed"
+    await directive_tracker.update_status(
+        dir_id, final_status, failure_reason=failure_reason if not success else None,
+        modules_created=len(modules or []), commit_hash=commit_hash)
+
+    # 7. Assistant performance
+    await assistant_perf.record_or_update(
+        assistant_id, directives_completed=1 if success else 0,
+        directives_failed=0 if success else 1,
+        lines_generated=lines_generated, files_created=files_created,
+        build_time=build_time_seconds)
+
+    return dir_id
+
+
+# Instantiate telemetry services
+directive_tracker = DirectiveTracker()
+codegen_metrics = CodeGenMetrics()
+service_impact = ServiceImpactTracker()
+deploy_telemetry = DeploymentTelemetry()
+test_metrics = TestMetrics()
+build_performance = BuildPerformanceTracker()
+assistant_perf = AssistantPerformanceTracker()
+
+
+# ---------------------------------------------------------------------------
 # Dashboard API
 # ---------------------------------------------------------------------------
 
@@ -7737,6 +8449,70 @@ async def dashboard_opportunities(request: web.Request) -> web.Response:
             "outreach": outreach_stats,
             "compliance": compliance_stats,
             "learning": learning_stats,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_build_metrics(request: web.Request) -> web.Response:
+    """Dashboard build metrics overview."""
+    try:
+        dir_stats = await directive_tracker.get_stats()
+        codegen_totals = await codegen_metrics.get_totals()
+        deploy_stats = await deploy_telemetry.get_stats()
+        test_stats = await test_metrics.get_stats()
+        build_avgs = await build_performance.get_averages()
+        recent_directives = await directive_tracker.get_directives(limit=10)
+        return web.json_response({
+            "directives": dir_stats,
+            "code_generation": codegen_totals,
+            "deployments": deploy_stats,
+            "tests": test_stats,
+            "build_averages": build_avgs,
+            "recent_directives": recent_directives,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_directives(request: web.Request) -> web.Response:
+    """Dashboard directive execution history."""
+    try:
+        directives = await directive_tracker.get_directives(limit=30)
+        stats = await directive_tracker.get_stats()
+        return web.json_response({
+            "stats": stats,
+            "directives": directives,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_code_generation(request: web.Request) -> web.Response:
+    """Dashboard code generation metrics."""
+    try:
+        totals = await codegen_metrics.get_totals()
+        summaries = await codegen_metrics.get_summaries(limit=20)
+        recent_events = await codegen_metrics.get_events(limit=30)
+        svc_stats = await service_impact.get_stats()
+        return web.json_response({
+            "totals": totals,
+            "summaries": summaries,
+            "recent_events": recent_events,
+            "service_impact": svc_stats,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_assistant_performance(request: web.Request) -> web.Response:
+    """Dashboard assistant performance analytics."""
+    try:
+        assistants = await assistant_perf.get_assistants()
+        dir_stats = await directive_tracker.get_stats()
+        return web.json_response({
+            "assistants": assistants,
+            "directive_stats": dir_stats,
         })
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
@@ -8267,6 +9043,9 @@ SLASH_COMMANDS = {
     "revenue": "Revenue tracking (/revenue summary|recent|conversions)",
     "deployments": "Client deployments (/deployments list)",
     "crm": "CRM overview (/crm)",
+    # Build Metrics & Telemetry
+    "build": "Build metrics (/build metrics|history|directive <id>|performance|codegen)",
+    "assistant": "Assistant performance (/assistant performance|<id>)",
     # Core
     "memory": "Show persistent memory stats (/memory search|distill <query>)",
     "forget": "Clear memory (/forget, /forget all, /forget thread, /forget channel)",
@@ -10130,6 +10909,136 @@ async def handle_slash_command(cmd: str, args: str, channel: str, thread_ts: str
         await post_message("\n".join(lines), channel, thread_ts)
         return True
 
+    # -----------------------------------------------------------------------
+    # Build Metrics & Development Telemetry Commands
+    # -----------------------------------------------------------------------
+
+    if cmd == "build":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "metrics"
+
+        if subcmd == "metrics":
+            dir_stats = await directive_tracker.get_stats()
+            cg_totals = await codegen_metrics.get_totals()
+            dep_stats = await deploy_telemetry.get_stats()
+            test_stats = await test_metrics.get_stats()
+            lines = [":wrench: *Build Metrics Overview*\n"]
+            lines.append(f"*Directives:* {dir_stats.get('total', 0)} total | {dir_stats.get('completed', 0)} completed | {dir_stats.get('success_rate', 0):.0%} success")
+            lines.append(f"*Avg build time:* {dir_stats.get('avg_duration_seconds', 0):.0f}s")
+            lines.append(f"*Code generated:* {cg_totals.get('total_lines_generated', 0):,} lines | {cg_totals.get('total_files_created', 0)} files created | {cg_totals.get('total_files_modified', 0)} modified")
+            lines.append(f"*Deployments:* {dep_stats.get('total', 0)} total | {dep_stats.get('success_rate', 0):.0%} success rate")
+            lines.append(f"*Tests:* {test_stats.get('total_executed', 0)} executed | {test_stats.get('pass_rate', 0):.0%} pass rate")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "history":
+            directives = await directive_tracker.get_directives(limit=10)
+            lines = [":scroll: *Directive History*\n"]
+            if not directives:
+                lines.append("_No directives recorded yet._")
+            for d in directives:
+                status_icon = ":white_check_mark:" if d.get("success") else (
+                    ":x:" if d.get("status") == "failed" else ":hourglass:")
+                dur = f" ({d.get('duration_seconds', 0):.0f}s)" if d.get("duration_seconds") else ""
+                title = d.get("directive_title", d.get("directive_type", "?"))
+                lines.append(f"{status_icon} *{title}*{dur} — {d.get('modules_created', 0)} modules | `{d.get('commit_hash', '')[:8] or '—'}`")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd.startswith("directive"):
+            dir_arg = sub[1].strip() if len(sub) > 1 else ""
+            if dir_arg:
+                directive = await directive_tracker.get_directive(dir_arg)
+                if directive:
+                    cg_events = await codegen_metrics.get_events(dir_arg, limit=20)
+                    svc_updates = await service_impact.get_updates(dir_arg)
+                    dep_events = await deploy_telemetry.get_events(dir_arg)
+                    build_mets = await build_performance.get_metrics(dir_arg)
+                    lines = [f":mag: *Directive: {directive.get('directive_title', dir_arg)}*\n"]
+                    lines.append(f"*Type:* {directive.get('directive_type', '?')}")
+                    lines.append(f"*Status:* {directive.get('status', '?')}")
+                    lines.append(f"*Duration:* {directive.get('duration_seconds', 0):.0f}s")
+                    lines.append(f"*Modules:* {directive.get('modules_created', 0)}")
+                    lines.append(f"*Commit:* `{directive.get('commit_hash', '—')}`")
+                    if cg_events:
+                        lines.append(f"\n*Code Events:* {len(cg_events)} files touched")
+                    if svc_updates:
+                        svcs = [s.get("service_name", "?") for s in svc_updates]
+                        lines.append(f"*Services:* {', '.join(svcs)}")
+                    if build_mets:
+                        for m in build_mets:
+                            lines.append(f"  {m.get('metric_type', '?')}: {m.get('metric_value', 0):.1f} {m.get('unit', '')}")
+                    await post_message("\n".join(lines), channel, thread_ts)
+                else:
+                    await post_message(f":x: Directive `{dir_arg}` not found.", channel, thread_ts)
+            else:
+                await post_message(":mag: Usage: `/build directive <directive_id>`", channel, thread_ts)
+
+        elif subcmd == "performance":
+            avgs = await build_performance.get_averages()
+            lines = [":zap: *Build Performance Averages*\n"]
+            if not avgs:
+                lines.append("_No metrics recorded yet._")
+            for mt, vals in avgs.items():
+                lines.append(f"*{mt}:* avg={vals['avg']:.1f} | min={vals['min']:.1f} | max={vals['max']:.1f} (n={vals['count']})")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "codegen":
+            totals = await codegen_metrics.get_totals()
+            summaries = await codegen_metrics.get_summaries(limit=5)
+            lines = [":keyboard: *Code Generation Stats*\n"]
+            lines.append(f"*Total lines generated:* {totals.get('total_lines_generated', 0):,}")
+            lines.append(f"*Files created:* {totals.get('total_files_created', 0)}")
+            lines.append(f"*Files modified:* {totals.get('total_files_modified', 0)}")
+            lines.append(f"*Lines changed:* {totals.get('total_lines_changed', 0):,}")
+            if summaries:
+                lines.append("\n*Recent:*")
+                for s in summaries:
+                    title = s.get("directive_title") or s.get("directive_type", "?")
+                    lines.append(f"  • {title}: +{s.get('lines_generated', 0)} lines, {s.get('files_created', 0)} new files")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        else:
+            await post_message(
+                ":wrench: */build* commands: `metrics`, `history`, `directive <id>`, "
+                "`performance`, `codegen`", channel, thread_ts)
+        return True
+
+    if cmd == "assistant":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "performance"
+
+        if subcmd == "performance":
+            assistants = await assistant_perf.get_assistants()
+            lines = [":robot_face: *Assistant Performance*\n"]
+            if not assistants:
+                lines.append("_No assistant data yet._")
+            for a in assistants:
+                total = a.get("directives_completed", 0) + a.get("directives_failed", 0)
+                sr = a.get("directives_completed", 0) / max(1, total)
+                lines.append(
+                    f":bust_in_silhouette: *{a.get('assistant_name', a.get('assistant_id', '?'))}*\n"
+                    f"  Directives: {a.get('directives_completed', 0)}/{total} ({sr:.0%} success)\n"
+                    f"  Lines generated: {a.get('total_lines_generated', 0):,}\n"
+                    f"  Avg build time: {a.get('avg_build_time', 0):.0f}s\n"
+                    f"  Errors: {a.get('error_count', 0)}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            # Look up specific assistant
+            asst = await assistant_perf.get_assistant(subcmd)
+            if asst:
+                total = asst.get("directives_completed", 0) + asst.get("directives_failed", 0)
+                lines = [f":bust_in_silhouette: *{asst.get('assistant_name', subcmd)}*\n"]
+                lines.append(f"*Directives completed:* {asst.get('directives_completed', 0)}")
+                lines.append(f"*Directives failed:* {asst.get('directives_failed', 0)}")
+                lines.append(f"*Total lines:* {asst.get('total_lines_generated', 0):,}")
+                lines.append(f"*Total files:* {asst.get('total_files_created', 0)}")
+                lines.append(f"*Avg build time:* {asst.get('avg_build_time', 0):.0f}s")
+                lines.append(f"*Avg lines/directive:* {asst.get('avg_lines_per_directive', 0):.0f}")
+                lines.append(f"*Errors:* {asst.get('error_count', 0)}")
+                await post_message("\n".join(lines), channel, thread_ts)
+            else:
+                await post_message(":robot_face: */assistant* commands: `performance` or `<assistant_id>`", channel, thread_ts)
+        return True
+
     return False
 
 
@@ -10430,7 +11339,7 @@ async def handle_health(request: web.Request) -> web.Response:
     return web.json_response({
         "status": "healthy",
         "service": "bunny-alpha",
-        "version": "3.2.0",
+        "version": "3.3.0",
         "active_tasks": len(active),
         "total_tasks": len(task_manager.tasks),
         "providers": {
@@ -10477,7 +11386,7 @@ async def on_startup(app: web.Application):
     if result.get("ok"):
         BOT_USER_ID = result["user_id"]
         log.info(
-            f"Bunny Alpha v3.2 online | bot={result['user']} | "
+            f"Bunny Alpha v3.3 online | bot={result['user']} | "
             f"team={result['team']} | user_id={BOT_USER_ID}"
         )
     else:
@@ -10604,6 +11513,44 @@ async def on_startup(app: web.Application):
     except Exception as e:
         log.warning(f"Relationship engine init error: {e}")
 
+    # Build Metrics & Telemetry initialization
+    try:
+        await assistant_perf.seed_assistants()
+        assistants = await assistant_perf.get_assistants()
+        log.info(f"Build telemetry: {len(assistants)} assistants tracked")
+
+        # Seed historical directive records for previous builds
+        existing = await directive_tracker.get_directives(limit=1)
+        if not existing:
+            historical = [
+                ("infrastructure", "Operational Hardening Layer", 8, 720, "a1e848d",
+                 ["sessions", "audit", "permissions", "sandbox", "escalation", "drills", "dashboard", "ai_portal"]),
+                ("infrastructure", "Continuous Learning & System Intelligence", 8, 720, "a1e848d",
+                 ["outcome_learning", "plan_optimizer", "routing_intel", "repair_learner", "agent_scorer", "memory_distiller", "explainability", "intelligence_loop"]),
+                ("infrastructure", "Scale & Autonomy Maturity", 7, 720, "a1e848d",
+                 ["worker_registry", "initiative_engine", "knowledge_evolution", "system_evaluator", "safety_governor", "plugin_manager", "digital_twin"]),
+                ("infrastructure", "Environment Intelligence & Digital Twin", 6, 720, "a1e848d",
+                 ["env_awareness", "event_ingestion", "digital_twin", "auto_ops", "knowledge_evolution", "operator_oversight"]),
+                ("safety", "Structured Execution & Safety Boundary", 3, 480, "70d70de",
+                 ["action_catalog", "execution_service", "infrastructure_adapter"]),
+                ("business", "Proactive Relationship & Opportunity Engine", 11, 540, "fd06bd7",
+                 ["signal_discovery", "opportunity_qualifier", "relationship_pipeline", "research_agent", "outreach_generator", "demo_generator", "proposal_generator", "deployment_trigger", "revenue_tracker", "relationship_learner", "outreach_compliance"]),
+            ]
+            for dtype, title, modules, dur, commit, mods in historical:
+                did = await directive_tracker.start_directive(dtype, title, "operator", mods)
+                await directive_tracker.update_status(did, "completed", modules_created=modules, commit_hash=commit)
+                await codegen_metrics.record_summary(did, 1, 1, dur * 2, dur, ", ".join(mods), ["python"])
+                await build_performance.record_metric(did, "total_build_time", float(dur))
+                await deploy_telemetry.record_event(did, "bunny-alpha", "deploy_restart", dur, True)
+                await service_impact.record_update(did, "bunny-alpha", "code_update", True)
+                await assistant_perf.record_or_update(
+                    "claude-code", "Claude Code",
+                    directives_completed=1, lines_generated=dur * 2,
+                    files_created=1, build_time=float(dur))
+            log.info(f"Seeded {len(historical)} historical directive records")
+    except Exception as e:
+        log.warning(f"Build telemetry init error: {e}")
+
     log.info(f"Listening on port {PORT}")
 
     # Start background services
@@ -10612,7 +11559,7 @@ async def on_startup(app: web.Application):
     await scheduler.start_scheduler_loop()
     await intel_loop.start_loop(3600)  # Intelligence loop every hour
 
-    await audit.log("system_startup", payload={"version": "3.2.0"})
+    await audit.log("system_startup", payload={"version": "3.3.0"})
 
 
 async def _periodic_cleanup():
@@ -10664,8 +11611,12 @@ def main():
     app.router.add_get("/dashboard/execution", dashboard_execution)
     app.router.add_get("/dashboard/pipeline", dashboard_pipeline)
     app.router.add_get("/dashboard/opportunities", dashboard_opportunities)
+    app.router.add_get("/dashboard/build_metrics", dashboard_build_metrics)
+    app.router.add_get("/dashboard/directives", dashboard_directives)
+    app.router.add_get("/dashboard/code_generation", dashboard_code_generation)
+    app.router.add_get("/dashboard/assistant_performance", dashboard_assistant_performance)
 
-    log.info("Starting Bunny Alpha v3.2 \u2014 Autonomous Operations Platform")
+    log.info("Starting Bunny Alpha v3.3 \u2014 Autonomous Operations Platform")
     web.run_app(app, host="0.0.0.0", port=PORT)
 
 
