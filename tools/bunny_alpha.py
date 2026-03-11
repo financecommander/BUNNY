@@ -54,8 +54,15 @@ DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 XAI_API_KEY = os.environ.get("XAI_API_KEY", "")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "").rstrip("/")
+AI_PORTAL_URL = os.environ.get("SWARM_AI_PORTAL_URL", "http://10.142.0.2:8000").rstrip("/")
+AI_PORTAL_TOKEN = os.environ.get("AI_PORTAL_API_KEY", "")
+AI_PORTAL_REFRESH = os.environ.get("AI_PORTAL_REFRESH_TOKEN", "")
 PORT = int(os.environ.get("BUNNY_ALPHA_PORT", "8090"))
 BOT_USER_ID: str = ""
+
+# Active model selection (can be changed via /model command)
+_active_provider: str = "deepseek"
+_active_model: str = "deepseek-chat"
 
 # Dedup
 _seen_events: Dict[str, float] = {}
@@ -633,15 +640,184 @@ async def query_ollama_chat(prompt: str, system: str, history: Optional[List[Dic
         return None
 
 
+# ---------------------------------------------------------------------------
+# AI Portal Provider (access to ALL models)
+# ---------------------------------------------------------------------------
+
+# Full model catalog from AI Portal
+PORTAL_MODELS = {
+    # OpenAI
+    "gpt-5.2":       {"provider": "openai",  "name": "GPT-5.2"},
+    "gpt-5":         {"provider": "openai",  "name": "GPT-5"},
+    "gpt-4.1":       {"provider": "openai",  "name": "GPT-4.1"},
+    "gpt-4.1-mini":  {"provider": "openai",  "name": "GPT-4.1 Mini"},
+    "gpt-4.1-nano":  {"provider": "openai",  "name": "GPT-4.1 Nano"},
+    "o3-mini":       {"provider": "openai",  "name": "o3-mini"},
+    # Anthropic
+    "claude-opus-4-6":              {"provider": "anthropic", "name": "Claude Opus 4.6"},
+    "claude-sonnet-4-6":            {"provider": "anthropic", "name": "Claude Sonnet 4.6"},
+    "claude-opus-4-5":              {"provider": "anthropic", "name": "Claude Opus 4.5"},
+    "claude-sonnet-4-5-20250929":   {"provider": "anthropic", "name": "Claude Sonnet 4.5"},
+    "claude-haiku-4-5-20251001":    {"provider": "anthropic", "name": "Claude Haiku 4.5"},
+    # Google
+    "gemini-3.1-pro-preview":  {"provider": "google",  "name": "Gemini 3.1 Pro"},
+    "gemini-3-flash-preview":  {"provider": "google",  "name": "Gemini 3 Flash"},
+    "gemini-2.5-pro":          {"provider": "google",  "name": "Gemini 2.5 Pro"},
+    "gemini-2.5-flash":        {"provider": "google",  "name": "Gemini 2.5 Flash"},
+    # xAI
+    "grok-4":        {"provider": "grok",    "name": "Grok 4"},
+    "grok-4-1-fast": {"provider": "grok",    "name": "Grok 4.1 Fast"},
+    "grok-3":        {"provider": "grok",    "name": "Grok 3"},
+    # DeepSeek
+    "deepseek-reasoner": {"provider": "deepseek", "name": "DeepSeek R1"},
+    "deepseek-chat":     {"provider": "deepseek", "name": "DeepSeek V3.2"},
+    # Mistral
+    "mistral-large-latest":  {"provider": "mistral", "name": "Mistral Large 3"},
+    "mistral-medium-latest": {"provider": "mistral", "name": "Mistral Medium 3"},
+    # Groq
+    "meta-llama/llama-4-maverick-17b-128e-instruct": {"provider": "groq", "name": "Llama 4 Maverick"},
+    "meta-llama/llama-4-scout-17b-16e-instruct":     {"provider": "groq", "name": "Llama 4 Scout"},
+}
+
+# Short aliases for convenience
+MODEL_ALIASES = {
+    "gpt5": "gpt-5.2", "gpt": "gpt-5.2",
+    "claude": "claude-sonnet-4-6", "opus": "claude-opus-4-6", "sonnet": "claude-sonnet-4-6", "haiku": "claude-haiku-4-5-20251001",
+    "gemini": "gemini-3.1-pro-preview", "flash": "gemini-3-flash-preview",
+    "grok": "grok-4", "grok4": "grok-4",
+    "deepseek": "deepseek-chat", "r1": "deepseek-reasoner",
+    "mistral": "mistral-large-latest",
+    "llama": "meta-llama/llama-4-maverick-17b-128e-instruct", "maverick": "meta-llama/llama-4-maverick-17b-128e-instruct",
+    "scout": "meta-llama/llama-4-scout-17b-16e-instruct",
+}
+
+
+async def _refresh_portal_token():
+    """Refresh the AI Portal JWT token."""
+    global AI_PORTAL_TOKEN
+    if not AI_PORTAL_REFRESH:
+        return False
+    try:
+        async with _session.post(
+            f"{AI_PORTAL_URL}/auth/refresh",
+            json={"refresh_token": AI_PORTAL_REFRESH},
+            timeout=ClientTimeout(total=10),
+        ) as resp:
+            data = await resp.json()
+            if "access_token" in data:
+                AI_PORTAL_TOKEN = data["access_token"]
+                log.info("AI Portal token refreshed")
+                return True
+            log.warning(f"Token refresh failed: {data}")
+            return False
+    except Exception as e:
+        log.warning(f"Token refresh error: {e}")
+        return False
+
+
+async def query_portal(prompt: str, system: str, history: Optional[List[Dict]] = None,
+                       provider: Optional[str] = None, model: Optional[str] = None) -> Optional[str]:
+    """Query AI Portal — routes to any model across all providers."""
+    global AI_PORTAL_TOKEN
+    if not AI_PORTAL_URL or not AI_PORTAL_TOKEN:
+        return None
+
+    use_provider = provider or _active_provider
+    use_model = model or _active_model
+
+    # Build conversation history in portal format
+    conv_history = []
+    if system:
+        conv_history.append({"role": "system", "content": system})
+    if history:
+        conv_history.extend(history)
+
+    payload = {
+        "provider": use_provider,
+        "model": use_model,
+        "message": prompt,
+        "conversation_history": conv_history,
+        "temperature": 0.7,
+        "max_tokens": 4096,
+    }
+
+    for attempt in range(2):  # retry once after token refresh
+        try:
+            async with _session.post(
+                f"{AI_PORTAL_URL}/chat/direct/stream",
+                headers={
+                    "Authorization": f"Bearer {AI_PORTAL_TOKEN}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=ClientTimeout(total=90),
+            ) as resp:
+                if resp.status == 401 and attempt == 0:
+                    # Token expired — refresh and retry
+                    if await _refresh_portal_token():
+                        continue
+                    return None
+
+                if resp.status != 200:
+                    body = await resp.text()
+                    log.warning(f"Portal error {resp.status}: {body[:200]}")
+                    return None
+
+                # Parse SSE stream
+                full_response = []
+                async for line in resp.content:
+                    line_str = line.decode("utf-8", errors="replace").strip()
+                    if line_str.startswith("data: "):
+                        try:
+                            chunk = json.loads(line_str[6:])
+                            content = chunk.get("content", "")
+                            if content:
+                                full_response.append(content)
+                        except json.JSONDecodeError:
+                            continue
+
+                result = "".join(full_response).strip()
+                if result:
+                    return result
+                return None
+        except Exception as e:
+            log.warning(f"Portal query failed ({use_provider}/{use_model}): {e}")
+            return None
+
+    return None
+
+
+def resolve_model(name: str) -> Tuple[str, str, str]:
+    """Resolve a model name/alias to (provider, model_id, display_name)."""
+    name = name.strip().lower()
+    # Check aliases first
+    if name in MODEL_ALIASES:
+        model_id = MODEL_ALIASES[name]
+        info = PORTAL_MODELS.get(model_id, {})
+        return info.get("provider", ""), model_id, info.get("name", model_id)
+    # Check direct model IDs
+    for mid, info in PORTAL_MODELS.items():
+        if name == mid.lower() or name == info["name"].lower():
+            return info["provider"], mid, info["name"]
+    return "", "", ""
+
+
 async def query_ai(prompt: str, system: Optional[str] = None,
                    channel: Optional[str] = None) -> str:
-    """Query AI with fallback chain and conversation history.
-
-    If channel is provided, includes conversation history from that channel.
-    """
+    """Query AI with fallback: Portal (active model) -> DeepSeek -> Groq -> xAI -> Ollama."""
     sys_prompt = system or BUNNY_ALPHA_PROMPT
     history = memory.get_history(channel) if channel else []
 
+    # Try AI Portal first (gives access to ALL models)
+    if AI_PORTAL_TOKEN:
+        result = await query_portal(prompt, sys_prompt, history)
+        if result:
+            model_info = PORTAL_MODELS.get(_active_model, {})
+            name = model_info.get("name", _active_model)
+            log.info(f"AI response from Portal/{name} ({len(result)} chars, {len(history)} history msgs)")
+            return result
+
+    # Fallback to direct API providers
     providers = [
         ("DeepSeek", query_deepseek),
         ("Groq", query_groq),
@@ -795,7 +971,8 @@ SLASH_COMMANDS = {
     "vms": "List all VMs with connectivity",
     "docker": "List Docker containers on swarm-mainframe",
     "gpu": "Show GPU status on swarm-gpu",
-    "models": "List available Ollama models",
+    "models": "List all available AI models (26+)",
+    "model": "Switch active model (e.g. /model gpt5, /model claude)",
     "logs": "Show recent Bunny Alpha logs",
     "health": "Run health check on all services",
     "memory": "Show conversation memory stats",
@@ -806,6 +983,7 @@ SLASH_COMMANDS = {
 
 async def handle_slash_command(cmd: str, args: str, channel: str, thread_ts: str) -> bool:
     """Handle built-in slash commands. Returns True if handled."""
+    global _active_provider, _active_model
     cmd = cmd.lower().strip()
 
     if cmd == "help":
@@ -898,12 +1076,46 @@ async def handle_slash_command(cmd: str, args: str, channel: str, thread_ts: str
         return True
 
     if cmd == "models":
-        group_id = uuid.uuid4().hex[:8]
-        task_manager.create_task("shell", "swarm-gpu",
-                                 "curl -s http://localhost:11434/api/tags | python3 -m json.tool 2>/dev/null || echo 'Ollama unreachable'",
-                                 channel, thread_ts, group_id)
-        tasks = await task_manager.execute_group(group_id, channel, thread_ts)
-        await _post_task_results(tasks, channel, thread_ts, "Ollama Models")
+        # Show all AI Portal models grouped by provider
+        current = PORTAL_MODELS.get(_active_model, {})
+        current_name = current.get("name", _active_model)
+        lines = [f":brain: *Available AI Models* (active: *{current_name}*)\n"]
+        by_provider: Dict[str, List[str]] = {}
+        for mid, info in PORTAL_MODELS.items():
+            p = info["provider"]
+            if p not in by_provider:
+                by_provider[p] = []
+            marker = " :star:" if mid == _active_model else ""
+            by_provider[p].append(f"`{mid}` \u2014 {info['name']}{marker}")
+        for p, models in by_provider.items():
+            lines.append(f"*{p.upper()}*")
+            for m in models:
+                lines.append(f"  \u2022 {m}")
+        lines.append(f"\n_Switch with_ `/model <name>` _or aliases:_ `gpt5`, `claude`, `gemini`, `grok`, `r1`, `llama`")
+        await post_message("\n".join(lines), channel, thread_ts)
+        return True
+
+    if cmd == "model":
+        if not args.strip():
+            current = PORTAL_MODELS.get(_active_model, {})
+            await post_message(
+                f":gear: Active model: *{current.get('name', _active_model)}* (`{_active_model}` via `{_active_provider}`)",
+                channel, thread_ts,
+            )
+            return True
+        provider, model_id, display = resolve_model(args.strip())
+        if not model_id:
+            await post_message(
+                f":warning: Unknown model `{args.strip()}`. Try `/models` to see available options.",
+                channel, thread_ts,
+            )
+            return True
+        _active_provider = provider
+        _active_model = model_id
+        await post_message(
+            f":white_check_mark: Switched to *{display}* (`{model_id}` via `{provider}`)",
+            channel, thread_ts,
+        )
         return True
 
     if cmd == "logs":
@@ -1271,6 +1483,27 @@ async def on_startup(app: web.Application):
     else:
         log.error(f"Slack auth failed: {result.get('error')}")
 
+    # AI Portal status
+    if AI_PORTAL_TOKEN:
+        try:
+            async with _session.get(
+                f"{AI_PORTAL_URL}/chat/direct/models",
+                headers={"Authorization": f"Bearer {AI_PORTAL_TOKEN}"},
+                timeout=ClientTimeout(total=5),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    model_count = len(data) if isinstance(data, list) else "?"
+                    log.info(f"AI Portal connected: {AI_PORTAL_URL} ({model_count} models available)")
+                    log.info(f"Active model: {_active_model} via {_active_provider}")
+                else:
+                    log.warning(f"AI Portal responded {resp.status} — may need token refresh")
+        except Exception as e:
+            log.warning(f"AI Portal unreachable: {e}")
+    else:
+        log.info("AI Portal: not configured (no token)")
+
+    # Direct API providers (fallback chain)
     providers = []
     if DEEPSEEK_API_KEY:
         providers.append("DeepSeek")
@@ -1281,7 +1514,7 @@ async def on_startup(app: web.Application):
     if OLLAMA_URL:
         providers.append(f"Ollama({OLLAMA_URL})")
 
-    log.info(f"AI providers: {', '.join(providers) or 'NONE'}")
+    log.info(f"Fallback providers: {', '.join(providers) or 'NONE'}")
     log.info(f"VMs: {', '.join(VMS.keys())}")
     log.info(f"Max concurrent tasks: {MAX_CONCURRENT_TASKS}")
     log.info(f"Listening on port {PORT}")
