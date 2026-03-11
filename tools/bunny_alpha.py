@@ -3442,6 +3442,12 @@ SLASH_COMMANDS = {
     "route": "Routing status/mode (/route status|mode <mode>)",
     "simulate": "Simulate plan/action (/simulate <plan_id>|action <type>)",
     "dashboard": "Show dashboard API endpoints",
+    "search": "Web search (/search <query>)",
+    "fetch": "Fetch URL content (/fetch <url>)",
+    "python": "Run Python code (/python <code>)",
+    "js": "Run JavaScript code (/js <code>)",
+    "files": "File operations (/files find|grep|read|summary <args>)",
+    "git": "Git operations (/git status|log|diff|branch|pull)",
     "memory": "Show persistent memory stats (/memory search <query>)",
     "forget": "Clear memory (/forget, /forget all, /forget thread, /forget channel)",
     "pref": "Set/get preferences (/pref key value, /pref key, /pref)",
@@ -4226,6 +4232,173 @@ async def handle_slash_command(cmd: str, args: str, channel: str, thread_ts: str
         lines.append(f"\u2022 `{port_url}/dashboard/graph` — Knowledge graph")
         lines.append(f"\n_Access via VM IP: `{VMS.get('swarm-mainframe', {}).get('ip', '10.142.0.4')}:{PORT}`_")
         await post_message("\n".join(lines), channel, thread_ts)
+        return True
+
+    # -- Web Search --
+    if cmd == "search":
+        query = args.strip()
+        if not query:
+            await post_message(":warning: Usage: `/search <query>`", channel, thread_ts)
+            return True
+        # Try to use a search API (Brave, SerpAPI, or fallback to AI)
+        search_key = os.environ.get("BRAVE_API_KEY", "") or os.environ.get("SERP_API_KEY", "")
+        if search_key and os.environ.get("BRAVE_API_KEY"):
+            try:
+                async with _session.get(
+                    "https://api.search.brave.com/res/v1/web/search",
+                    headers={"X-Subscription-Token": search_key, "Accept": "application/json"},
+                    params={"q": query, "count": 5},
+                    timeout=ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        results = data.get("web", {}).get("results", [])[:5]
+                        lines = [f":mag: *Search: `{query}`*\n"]
+                        for r in results:
+                            lines.append(f"\u2022 <{r['url']}|{r['title'][:60]}>")
+                            if r.get("description"):
+                                lines.append(f"  {r['description'][:100]}")
+                        await post_message("\n".join(lines), channel, thread_ts)
+                        return True
+            except Exception as e:
+                log.warning(f"Search API failed: {e}")
+
+        # Fallback: ask AI to summarize search results
+        result = await query_ai(
+            f"Search the web for: {query}\n\nProvide a concise answer with relevant information.",
+            channel=channel,
+        )
+        await post_message(result, channel, thread_ts)
+        return True
+
+    if cmd == "fetch":
+        url = args.strip()
+        if not url:
+            await post_message(":warning: Usage: `/fetch <url>`", channel, thread_ts)
+            return True
+        try:
+            async with _session.get(url, timeout=ClientTimeout(total=15)) as resp:
+                text = await resp.text()
+                # Truncate and clean
+                text = text[:3000].replace("```", "` ` `")
+                await post_message(f":globe_with_meridians: *Fetched `{url[:60]}`*\n```{text[:2000]}```", channel, thread_ts)
+        except Exception as e:
+            await post_message(f":x: Fetch failed: `{e}`", channel, thread_ts)
+        return True
+
+    # -- Code Execution --
+    if cmd == "python":
+        code = args.strip()
+        if not code:
+            await post_message(":warning: Usage: `/python <code>`", channel, thread_ts)
+            return True
+        try:
+            result = await tool_executor.execute("shell", "swarm-mainframe",
+                f"timeout 30 python3 -c {repr(code)} 2>&1 | head -50")
+            await post_message(f":snake: *Python Output*\n```{(result or 'no output')[:2000]}```", channel, thread_ts)
+        except Exception as e:
+            await post_message(f":x: Python error: `{e}`", channel, thread_ts)
+        return True
+
+    if cmd == "js":
+        code = args.strip()
+        if not code:
+            await post_message(":warning: Usage: `/js <code>`", channel, thread_ts)
+            return True
+        try:
+            result = await tool_executor.execute("shell", "swarm-mainframe",
+                f"timeout 30 node -e {repr(code)} 2>&1 | head -50")
+            await post_message(f":computer: *JS Output*\n```{(result or 'no output')[:2000]}```", channel, thread_ts)
+        except Exception as e:
+            await post_message(f":x: JS error: `{e}`", channel, thread_ts)
+        return True
+
+    # -- File Management --
+    if cmd == "files":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "help"
+        fargs = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "find" and fargs:
+            host_parts = fargs.split("@")
+            pattern = host_parts[0].strip()
+            host = host_parts[1].strip() if len(host_parts) > 1 else "swarm-mainframe"
+            result = await tool_executor.execute("shell", host,
+                f"find / -maxdepth 4 -name '{pattern}' -type f 2>/dev/null | head -20")
+            await post_message(f":file_folder: *Find `{pattern}`* on `{host}`\n```{(result or 'no results')[:2000]}```", channel, thread_ts)
+
+        elif subcmd == "grep" and fargs:
+            host_parts = fargs.split("@")
+            pattern = host_parts[0].strip()
+            host = host_parts[1].strip() if len(host_parts) > 1 else "swarm-mainframe"
+            result = await tool_executor.execute("shell", host,
+                f"grep -r '{pattern}' /opt/ /etc/ 2>/dev/null | head -20")
+            await post_message(f":mag: *Grep `{pattern}`* on `{host}`\n```{(result or 'no results')[:2000]}```", channel, thread_ts)
+
+        elif subcmd == "read" and fargs:
+            host_parts = fargs.split("@")
+            path = host_parts[0].strip()
+            host = host_parts[1].strip() if len(host_parts) > 1 else "swarm-mainframe"
+            result = await tool_executor.execute("shell", host, f"head -100 '{path}' 2>&1")
+            await post_message(f":page_facing_up: *`{path}`* on `{host}`\n```{(result or 'empty')[:2000]}```", channel, thread_ts)
+
+        elif subcmd == "summary" and fargs:
+            host_parts = fargs.split("@")
+            path = host_parts[0].strip()
+            host = host_parts[1].strip() if len(host_parts) > 1 else "swarm-mainframe"
+            result = await tool_executor.execute("shell", host, f"wc -l '{path}' && file '{path}' && ls -lh '{path}' 2>&1")
+            await post_message(f":page_facing_up: *Summary of `{path}`*\n```{(result or 'not found')[:1000]}```", channel, thread_ts)
+
+        else:
+            await post_message(
+                ":file_folder: */files* commands: `find <pattern>[@host]`, `grep <pattern>[@host]`, "
+                "`read <path>[@host]`, `summary <path>[@host]`",
+                channel, thread_ts,
+            )
+        return True
+
+    # -- Git Operations --
+    if cmd == "git":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "help"
+        gargs = sub[1].strip() if len(sub) > 1 else ""
+
+        default_repo = "/opt/bunny-alpha"
+        repo = gargs.split("@")[-1].strip() if "@" in gargs else default_repo
+        git_args = gargs.split("@")[0].strip() if "@" in gargs else gargs
+
+        if subcmd == "status":
+            result = await tool_executor.execute("shell", "swarm-mainframe",
+                f"cd {repo} && git status --short 2>&1")
+            await post_message(f":git: *Git status* (`{repo}`)\n```{(result or 'clean')[:2000]}```", channel, thread_ts)
+
+        elif subcmd == "log":
+            count = git_args or "10"
+            result = await tool_executor.execute("shell", "swarm-mainframe",
+                f"cd {repo} && git log --oneline -n {count} 2>&1")
+            await post_message(f":git: *Git log* (`{repo}`)\n```{(result or 'no commits')[:2000]}```", channel, thread_ts)
+
+        elif subcmd == "diff":
+            result = await tool_executor.execute("shell", "swarm-mainframe",
+                f"cd {repo} && git diff --stat 2>&1")
+            await post_message(f":git: *Git diff* (`{repo}`)\n```{(result or 'no changes')[:2000]}```", channel, thread_ts)
+
+        elif subcmd == "branch":
+            result = await tool_executor.execute("shell", "swarm-mainframe",
+                f"cd {repo} && git branch -a 2>&1")
+            await post_message(f":git: *Branches* (`{repo}`)\n```{(result or 'none')[:2000]}```", channel, thread_ts)
+
+        elif subcmd == "pull":
+            result = await tool_executor.execute("shell", "swarm-mainframe",
+                f"cd {repo} && git pull 2>&1")
+            await post_message(f":git: *Git pull* (`{repo}`)\n```{(result or 'done')[:2000]}```", channel, thread_ts)
+
+        else:
+            await post_message(
+                ":git: */git* commands: `status`, `log [n]`, `diff`, `branch`, `pull`\n"
+                "_Append `@/path/to/repo` to target a specific repo_",
+                channel, thread_ts,
+            )
         return True
 
     return False
