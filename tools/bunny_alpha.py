@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bunny Alpha v3.1 — Autonomous Operations Platform
+Bunny Alpha v3.2 — Autonomous Operations Platform
 
 Standalone Slack assistant with real infrastructure execution.
 Task queue, concurrent execution, progress reporting.
@@ -978,6 +978,195 @@ def _init_db():
                 created_at REAL NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_audit_actions ON audit_actions(action_type, created_at);
+
+            -- ============================================================
+            -- Proactive Relationship & Opportunity Engine
+            -- ============================================================
+
+            CREATE TABLE IF NOT EXISTS company_signals (
+                signal_id TEXT PRIMARY KEY,
+                company_name TEXT NOT NULL,
+                domain TEXT,
+                signal_type TEXT NOT NULL,
+                signal_source TEXT NOT NULL,
+                signal_payload_json TEXT,
+                confidence REAL DEFAULT 0.5,
+                processed INTEGER DEFAULT 0,
+                timestamp REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_comp_signals_ts ON company_signals(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_comp_signals_type ON company_signals(signal_type);
+
+            CREATE TABLE IF NOT EXISTS signal_sources (
+                source_id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                source_url TEXT,
+                polling_interval INTEGER DEFAULT 3600,
+                last_scan REAL DEFAULT 0,
+                enabled INTEGER DEFAULT 1,
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS company_profiles (
+                company_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                domain TEXT,
+                industry TEXT,
+                size_estimate TEXT,
+                tech_stack_json TEXT,
+                ai_need_score REAL DEFAULT 0.0,
+                security_sensitivity_score REAL DEFAULT 0.0,
+                description TEXT,
+                website TEXT,
+                location TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_comp_profiles_score ON company_profiles(ai_need_score DESC);
+
+            CREATE TABLE IF NOT EXISTS opportunity_scores (
+                opportunity_id TEXT PRIMARY KEY,
+                company_id TEXT NOT NULL,
+                ai_fit_score REAL DEFAULT 0.0,
+                estimated_value REAL DEFAULT 0.0,
+                difficulty_score REAL DEFAULT 0.5,
+                confidence REAL DEFAULT 0.5,
+                scoring_factors_json TEXT,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_opp_scores ON opportunity_scores(ai_fit_score DESC);
+
+            CREATE TABLE IF NOT EXISTS relationship_pipeline (
+                pipeline_id TEXT PRIMARY KEY,
+                company_id TEXT NOT NULL,
+                stage TEXT DEFAULT 'detected',
+                last_contact_time REAL,
+                notes TEXT,
+                assigned_agent TEXT,
+                priority INTEGER DEFAULT 5,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_rel_pipeline_stage ON relationship_pipeline(stage);
+
+            CREATE TABLE IF NOT EXISTS relationship_events (
+                event_id TEXT PRIMARY KEY,
+                company_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                event_details_json TEXT,
+                actor TEXT DEFAULT 'system',
+                timestamp REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_rel_events_ts ON relationship_events(timestamp);
+
+            CREATE TABLE IF NOT EXISTS company_research (
+                research_id TEXT PRIMARY KEY,
+                company_id TEXT NOT NULL,
+                summary TEXT,
+                ai_use_cases_json TEXT,
+                internal_process_candidates_json TEXT,
+                security_requirements TEXT,
+                competitor_landscape TEXT,
+                products_services TEXT,
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS outreach_messages (
+                message_id TEXT PRIMARY KEY,
+                company_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                message_content TEXT NOT NULL,
+                personalization_fields_json TEXT,
+                template_id TEXT,
+                sent_at REAL,
+                response_status TEXT DEFAULT 'draft',
+                approved_by TEXT,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_outreach_status ON outreach_messages(response_status);
+
+            CREATE TABLE IF NOT EXISTS demo_blueprints (
+                blueprint_id TEXT PRIMARY KEY,
+                company_id TEXT NOT NULL,
+                domain TEXT,
+                agents_json TEXT,
+                workflows_json TEXT,
+                integrations_json TEXT,
+                monitoring_rules_json TEXT,
+                deployment_targets_json TEXT,
+                industry_template TEXT,
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS system_proposals (
+                proposal_id TEXT PRIMARY KEY,
+                company_id TEXT NOT NULL,
+                blueprint_id TEXT,
+                architecture_summary TEXT,
+                problem_summary TEXT,
+                security_model TEXT,
+                deployment_approach TEXT,
+                estimated_cost REAL,
+                estimated_roi REAL,
+                expected_benefits TEXT,
+                status TEXT DEFAULT 'draft',
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_proposals_status ON system_proposals(status);
+
+            CREATE TABLE IF NOT EXISTS deployments (
+                deployment_id TEXT PRIMARY KEY,
+                company_id TEXT NOT NULL,
+                blueprint_id TEXT,
+                proposal_id TEXT,
+                deployment_status TEXT DEFAULT 'planned',
+                environment_target TEXT,
+                deployment_plan_json TEXT,
+                monitoring_url TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_deployments_status ON deployments(deployment_status);
+
+            CREATE TABLE IF NOT EXISTS client_revenue (
+                revenue_id TEXT PRIMARY KEY,
+                company_id TEXT NOT NULL,
+                deployment_id TEXT,
+                revenue_type TEXT NOT NULL,
+                amount REAL NOT NULL,
+                billing_period TEXT,
+                notes TEXT,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_revenue_company ON client_revenue(company_id);
+
+            CREATE TABLE IF NOT EXISTS relationship_outcomes (
+                outcome_id TEXT PRIMARY KEY,
+                company_id TEXT NOT NULL,
+                stage_reached TEXT NOT NULL,
+                success INTEGER DEFAULT 0,
+                revenue_generated REAL DEFAULT 0.0,
+                lessons_json TEXT,
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS optimization_updates (
+                update_id TEXT PRIMARY KEY,
+                strategy_change TEXT NOT NULL,
+                performance_delta REAL,
+                affected_stage TEXT,
+                timestamp REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS outreach_policies (
+                policy_id TEXT PRIMARY KEY,
+                rule_type TEXT NOT NULL,
+                rule_value TEXT,
+                enforcement_action TEXT NOT NULL,
+                max_per_day INTEGER DEFAULT 10,
+                cooldown_hours INTEGER DEFAULT 72,
+                enabled INTEGER DEFAULT 1,
+                updated_at REAL NOT NULL
+            );
         """)
         conn.commit()
         log.info(f"Persistent memory initialized: {DB_PATH}")
@@ -6142,6 +6331,1139 @@ tool_executor.execute = _mediated_tool_execute
 
 
 # ---------------------------------------------------------------------------
+# Proactive Relationship & Opportunity Engine
+# ---------------------------------------------------------------------------
+
+class SignalDiscovery:
+    """Module 1: Company Signal Discovery — detects orgs needing AI systems."""
+
+    SIGNAL_TYPES = [
+        "ai_hiring", "ml_engineer_hiring", "data_engineer_hiring",
+        "github_corporate", "saas_launch", "funding_round",
+        "industry_announcement", "compliance_update", "ai_adoption",
+        "digital_transformation", "security_investment", "tech_expansion",
+    ]
+
+    async def add_signal(self, company_name: str, domain: str, signal_type: str,
+                         source: str, payload: Dict = None, confidence: float = 0.5) -> str:
+        signal_id = f"sig-{uuid.uuid4().hex[:12]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO company_signals "
+                    "(signal_id, company_name, domain, signal_type, signal_source, "
+                    "signal_payload_json, confidence, timestamp) VALUES (?,?,?,?,?,?,?,?)",
+                    (signal_id, company_name, domain or "", signal_type, source,
+                     json.dumps(payload or {}), confidence, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        return signal_id
+
+    async def get_signals(self, limit: int = 20, signal_type: str = None,
+                          unprocessed_only: bool = False) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                where = []
+                params = []
+                if signal_type:
+                    where.append("signal_type=?")
+                    params.append(signal_type)
+                if unprocessed_only:
+                    where.append("processed=0")
+                clause = f"WHERE {' AND '.join(where)}" if where else ""
+                params.append(limit)
+                return [dict(r) for r in conn.execute(
+                    f"SELECT * FROM company_signals {clause} ORDER BY timestamp DESC LIMIT ?",
+                    params).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def mark_processed(self, signal_id: str):
+        def _up():
+            conn = _db_connect()
+            try:
+                conn.execute("UPDATE company_signals SET processed=1 WHERE signal_id=?",
+                             (signal_id,))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_up)
+
+    async def add_source(self, source_type: str, source_url: str = None,
+                         polling_interval: int = 3600) -> str:
+        source_id = f"src-{uuid.uuid4().hex[:8]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO signal_sources "
+                    "(source_id, source_type, source_url, polling_interval, created_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (source_id, source_type, source_url or "", polling_interval, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        return source_id
+
+    async def get_sources(self) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM signal_sources ORDER BY last_scan").fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_stats(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                total = conn.execute("SELECT COUNT(*) FROM company_signals").fetchone()[0]
+                unprocessed = conn.execute("SELECT COUNT(*) FROM company_signals WHERE processed=0").fetchone()[0]
+                sources = conn.execute("SELECT COUNT(*) FROM signal_sources").fetchone()[0]
+                by_type = {}
+                for row in conn.execute(
+                    "SELECT signal_type, COUNT(*) as cnt FROM company_signals GROUP BY signal_type"):
+                    by_type[row["signal_type"]] = row["cnt"]
+                return {"total_signals": total, "unprocessed": unprocessed,
+                        "sources": sources, "by_type": by_type}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def seed_sources(self):
+        """Seed default signal sources."""
+        defaults = [
+            ("job_boards", "https://api.example.com/jobs", 3600),
+            ("github_trending", "https://api.github.com/search/repositories", 7200),
+            ("news_feed", "https://newsapi.org/v2/everything", 1800),
+            ("funding_tracker", "https://api.crunchbase.com/v4", 86400),
+            ("linkedin_signals", "https://api.linkedin.com/v2", 3600),
+        ]
+        for src_type, url, interval in defaults:
+            await self.add_source(src_type, url, interval)
+
+
+class OpportunityQualifier:
+    """Module 2: Opportunity Qualification — score companies for AI fit."""
+
+    INDUSTRY_AI_WEIGHT = {
+        "fintech": 0.9, "healthcare": 0.85, "legal": 0.8, "insurance": 0.85,
+        "logistics": 0.75, "manufacturing": 0.7, "retail": 0.65, "education": 0.6,
+        "real_estate": 0.7, "defense": 0.9, "government": 0.8, "saas": 0.85,
+        "cybersecurity": 0.9, "crypto": 0.8, "media": 0.6,
+    }
+
+    async def create_profile(self, name: str, domain: str = None, industry: str = None,
+                             size: str = None, tech_stack: List[str] = None,
+                             description: str = None, website: str = None,
+                             location: str = None) -> str:
+        company_id = f"comp-{uuid.uuid4().hex[:10]}"
+        now = time.time()
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO company_profiles "
+                    "(company_id, name, domain, industry, size_estimate, tech_stack_json, "
+                    "description, website, location, created_at, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (company_id, name, domain or "", industry or "", size or "",
+                     json.dumps(tech_stack or []), description or "", website or "",
+                     location or "", now, now))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        return company_id
+
+    async def score_opportunity(self, company_id: str) -> Dict:
+        """Calculate AI fit score for a company."""
+        def _q():
+            conn = _db_connect()
+            try:
+                row = conn.execute("SELECT * FROM company_profiles WHERE company_id=?",
+                                   (company_id,)).fetchone()
+                if not row:
+                    return None
+                profile = dict(row)
+
+                # Scoring factors
+                industry = profile.get("industry", "").lower()
+                industry_weight = self.INDUSTRY_AI_WEIGHT.get(industry, 0.5)
+
+                size = profile.get("size_estimate", "").lower()
+                size_score = {"enterprise": 0.9, "mid-market": 0.8, "startup": 0.6,
+                              "smb": 0.4}.get(size, 0.5)
+
+                tech_stack = json.loads(profile.get("tech_stack_json", "[]") or "[]")
+                tech_indicators = sum(1 for t in tech_stack if t.lower() in
+                    ["python", "kubernetes", "docker", "aws", "gcp", "azure",
+                     "tensorflow", "pytorch", "spark", "redis", "postgresql"])
+                tech_score = min(1.0, tech_indicators * 0.15)
+
+                # Signals count
+                sig_count = conn.execute(
+                    "SELECT COUNT(*) FROM company_signals WHERE company_name=? OR domain=?",
+                    (profile["name"], profile.get("domain", ""))).fetchone()[0]
+                signal_score = min(1.0, sig_count * 0.2)
+
+                ai_fit = round(
+                    industry_weight * 0.3 + size_score * 0.2 +
+                    tech_score * 0.25 + signal_score * 0.25, 3)
+
+                security_sens = round(
+                    (0.8 if industry in ("fintech", "healthcare", "defense", "government", "legal") else 0.4) +
+                    (0.2 if "enterprise" in size else 0.0), 3)
+
+                estimated_value = round(ai_fit * 100000 * (1 + size_score), 2)
+                difficulty = round(1.0 - (tech_score * 0.5 + signal_score * 0.5), 3)
+
+                # Update profile scores
+                conn.execute(
+                    "UPDATE company_profiles SET ai_need_score=?, security_sensitivity_score=?, "
+                    "updated_at=? WHERE company_id=?",
+                    (ai_fit, security_sens, time.time(), company_id))
+
+                # Insert opportunity score
+                opp_id = f"opp-{uuid.uuid4().hex[:10]}"
+                factors = {"industry": industry_weight, "size": size_score,
+                           "tech": tech_score, "signals": signal_score}
+                conn.execute(
+                    "INSERT INTO opportunity_scores "
+                    "(opportunity_id, company_id, ai_fit_score, estimated_value, "
+                    "difficulty_score, confidence, scoring_factors_json, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (opp_id, company_id, ai_fit, estimated_value, difficulty,
+                     min(0.9, 0.3 + sig_count * 0.1), json.dumps(factors), time.time()))
+                conn.commit()
+
+                return {"company_id": company_id, "ai_fit_score": ai_fit,
+                        "estimated_value": estimated_value, "difficulty": difficulty,
+                        "security_sensitivity": security_sens, "factors": factors}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_top_opportunities(self, limit: int = 10) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT cp.*, os.ai_fit_score, os.estimated_value, os.difficulty_score "
+                    "FROM company_profiles cp "
+                    "LEFT JOIN opportunity_scores os ON cp.company_id = os.company_id "
+                    "ORDER BY cp.ai_need_score DESC LIMIT ?", (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_profiles(self, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM company_profiles ORDER BY ai_need_score DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class RelationshipPipeline:
+    """Module 3: Relationship Pipeline — track interaction lifecycle."""
+
+    STAGES = [
+        "detected", "research", "contact_initiated", "conversation_active",
+        "demo_requested", "proposal_sent", "deployment_in_progress", "active_client",
+    ]
+
+    async def init_pipeline(self, company_id: str, stage: str = "detected",
+                            notes: str = "", agent: str = "system") -> str:
+        pipeline_id = f"pipe-{uuid.uuid4().hex[:10]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO relationship_pipeline "
+                    "(pipeline_id, company_id, stage, notes, assigned_agent, updated_at) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (pipeline_id, company_id, stage, notes, agent, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        await self.add_event(company_id, "pipeline_created", {"stage": stage})
+        return pipeline_id
+
+    async def advance_stage(self, company_id: str, new_stage: str, notes: str = ""):
+        def _up():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "UPDATE relationship_pipeline SET stage=?, notes=?, "
+                    "last_contact_time=?, updated_at=? WHERE company_id=?",
+                    (new_stage, notes, time.time(), time.time(), company_id))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_up)
+        await self.add_event(company_id, "stage_advanced", {"new_stage": new_stage, "notes": notes})
+
+    async def add_event(self, company_id: str, event_type: str, details: Dict = None):
+        event_id = f"revt-{uuid.uuid4().hex[:10]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO relationship_events "
+                    "(event_id, company_id, event_type, event_details_json, timestamp) "
+                    "VALUES (?,?,?,?,?)",
+                    (event_id, company_id, event_type, json.dumps(details or {}), time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+
+    async def get_pipeline(self, stage: str = None, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if stage:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT rp.*, cp.name, cp.industry, cp.ai_need_score "
+                        "FROM relationship_pipeline rp "
+                        "LEFT JOIN company_profiles cp ON rp.company_id = cp.company_id "
+                        "WHERE rp.stage=? ORDER BY rp.updated_at DESC LIMIT ?",
+                        (stage, limit)).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT rp.*, cp.name, cp.industry, cp.ai_need_score "
+                    "FROM relationship_pipeline rp "
+                    "LEFT JOIN company_profiles cp ON rp.company_id = cp.company_id "
+                    "ORDER BY rp.updated_at DESC LIMIT ?", (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_events(self, company_id: str = None, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if company_id:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT * FROM relationship_events WHERE company_id=? "
+                        "ORDER BY timestamp DESC LIMIT ?", (company_id, limit)).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM relationship_events ORDER BY timestamp DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_stats(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                by_stage = {}
+                for row in conn.execute(
+                    "SELECT stage, COUNT(*) as cnt FROM relationship_pipeline GROUP BY stage"):
+                    by_stage[row["stage"]] = row["cnt"]
+                total = conn.execute("SELECT COUNT(*) FROM relationship_pipeline").fetchone()[0]
+                events = conn.execute("SELECT COUNT(*) FROM relationship_events").fetchone()[0]
+                return {"total_relationships": total, "total_events": events, "by_stage": by_stage}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class ResearchAgent:
+    """Module 4: Research Agent — auto-generate company intelligence profiles."""
+
+    async def create_research(self, company_id: str, summary: str = "",
+                              ai_use_cases: List[str] = None,
+                              process_candidates: List[str] = None,
+                              security_reqs: str = "", competitors: str = "",
+                              products: str = "") -> str:
+        research_id = f"res-{uuid.uuid4().hex[:10]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO company_research "
+                    "(research_id, company_id, summary, ai_use_cases_json, "
+                    "internal_process_candidates_json, security_requirements, "
+                    "competitor_landscape, products_services, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    (research_id, company_id, summary,
+                     json.dumps(ai_use_cases or []),
+                     json.dumps(process_candidates or []),
+                     security_reqs, competitors, products, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        return research_id
+
+    async def get_research(self, company_id: str) -> Optional[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM company_research WHERE company_id=? "
+                    "ORDER BY created_at DESC LIMIT 1", (company_id,)).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def generate_research_prompt(self, company_id: str) -> str:
+        """Generate AI prompt to research a company."""
+        def _q():
+            conn = _db_connect()
+            try:
+                row = conn.execute("SELECT * FROM company_profiles WHERE company_id=?",
+                                   (company_id,)).fetchone()
+                if not row:
+                    return None
+                profile = dict(row)
+                signals = conn.execute(
+                    "SELECT * FROM company_signals WHERE company_name=? OR domain=? "
+                    "ORDER BY timestamp DESC LIMIT 5",
+                    (profile["name"], profile.get("domain", ""))).fetchall()
+                return profile, [dict(s) for s in signals]
+            finally:
+                conn.close()
+
+        result = await asyncio.to_thread(_q)
+        if not result:
+            return ""
+        profile, signals = result
+
+        signal_text = "\n".join(
+            f"- {s['signal_type']}: {s.get('signal_payload_json', '')[:100]}"
+            for s in signals)
+
+        return (
+            f"Research the following company for potential AI system deployment:\n\n"
+            f"Company: {profile['name']}\n"
+            f"Domain: {profile.get('domain', 'unknown')}\n"
+            f"Industry: {profile.get('industry', 'unknown')}\n"
+            f"Size: {profile.get('size_estimate', 'unknown')}\n"
+            f"Tech Stack: {profile.get('tech_stack_json', '[]')}\n"
+            f"\nSignals:\n{signal_text}\n\n"
+            f"Provide:\n1. Company overview\n2. Products/services\n"
+            f"3. Top 3 AI use cases for their business\n"
+            f"4. Internal workflow automation opportunities\n"
+            f"5. Security/compliance requirements\n6. Competitor landscape"
+        )
+
+    async def get_all_research(self, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT cr.*, cp.name, cp.industry FROM company_research cr "
+                    "LEFT JOIN company_profiles cp ON cr.company_id = cp.company_id "
+                    "ORDER BY cr.created_at DESC LIMIT ?", (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class OutreachGenerator:
+    """Module 5: Targeted Outreach Generation — personalized messages."""
+
+    CHANNELS = ["email", "linkedin", "warm_intro", "partner_proposal", "demo_invitation"]
+
+    async def generate_outreach(self, company_id: str, channel: str,
+                                content: str, personalization: Dict = None,
+                                template_id: str = None) -> str:
+        message_id = f"out-{uuid.uuid4().hex[:10]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO outreach_messages "
+                    "(message_id, company_id, channel, message_content, "
+                    "personalization_fields_json, template_id, response_status, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (message_id, company_id, channel, content,
+                     json.dumps(personalization or {}), template_id or "",
+                     "draft", time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        return message_id
+
+    async def approve_outreach(self, message_id: str, approved_by: str = "operator"):
+        def _up():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "UPDATE outreach_messages SET response_status='approved', "
+                    "approved_by=? WHERE message_id=?", (approved_by, message_id))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_up)
+
+    async def mark_sent(self, message_id: str):
+        def _up():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "UPDATE outreach_messages SET response_status='sent', sent_at=? "
+                    "WHERE message_id=?", (time.time(), message_id))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_up)
+
+    async def update_response(self, message_id: str, status: str):
+        """Update response status: replied, interested, declined, no_response."""
+        def _up():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "UPDATE outreach_messages SET response_status=? WHERE message_id=?",
+                    (status, message_id))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_up)
+
+    async def get_messages(self, company_id: str = None, status: str = None,
+                           limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                where = []
+                params = []
+                if company_id:
+                    where.append("company_id=?")
+                    params.append(company_id)
+                if status:
+                    where.append("response_status=?")
+                    params.append(status)
+                clause = f"WHERE {' AND '.join(where)}" if where else ""
+                params.append(limit)
+                return [dict(r) for r in conn.execute(
+                    f"SELECT * FROM outreach_messages {clause} "
+                    f"ORDER BY created_at DESC LIMIT ?", params).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def generate_outreach_prompt(self, company_id: str, channel: str) -> str:
+        """Build a prompt for AI to generate personalized outreach."""
+        def _q():
+            conn = _db_connect()
+            try:
+                profile = conn.execute("SELECT * FROM company_profiles WHERE company_id=?",
+                                       (company_id,)).fetchone()
+                research = conn.execute("SELECT * FROM company_research WHERE company_id=? "
+                                        "ORDER BY created_at DESC LIMIT 1",
+                                        (company_id,)).fetchone()
+                return dict(profile) if profile else None, dict(research) if research else None
+            finally:
+                conn.close()
+
+        profile, research = await asyncio.to_thread(_q)
+        if not profile:
+            return ""
+
+        research_text = ""
+        if research:
+            research_text = (
+                f"\nResearch Summary: {research.get('summary', '')[:200]}\n"
+                f"AI Use Cases: {research.get('ai_use_cases_json', '[]')}\n"
+            )
+
+        return (
+            f"Generate a personalized {channel} outreach message for:\n\n"
+            f"Company: {profile['name']}\n"
+            f"Industry: {profile.get('industry', '')}\n"
+            f"Size: {profile.get('size_estimate', '')}\n"
+            f"{research_text}\n"
+            f"Requirements:\n"
+            f"- Reference specific company needs\n"
+            f"- Clear value proposition for secure in-house AI\n"
+            f"- Include opt-out language\n"
+            f"- Professional, non-spammy tone\n"
+            f"- Under 200 words"
+        )
+
+    async def get_stats(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                total = conn.execute("SELECT COUNT(*) FROM outreach_messages").fetchone()[0]
+                by_status = {}
+                for row in conn.execute(
+                    "SELECT response_status, COUNT(*) as cnt FROM outreach_messages "
+                    "GROUP BY response_status"):
+                    by_status[row["response_status"]] = row["cnt"]
+                by_channel = {}
+                for row in conn.execute(
+                    "SELECT channel, COUNT(*) as cnt FROM outreach_messages GROUP BY channel"):
+                    by_channel[row["channel"]] = row["cnt"]
+                return {"total": total, "by_status": by_status, "by_channel": by_channel}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class DemoGenerator:
+    """Module 6: Demo System Generation — tailored demo AI systems."""
+
+    async def generate_blueprint(self, company_id: str, domain: str = "",
+                                 agents: List[Dict] = None, workflows: List[Dict] = None,
+                                 integrations: List[str] = None,
+                                 monitoring_rules: List[Dict] = None,
+                                 deployment_targets: List[str] = None,
+                                 industry_template: str = "") -> str:
+        blueprint_id = f"bp-{uuid.uuid4().hex[:10]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO demo_blueprints "
+                    "(blueprint_id, company_id, domain, agents_json, workflows_json, "
+                    "integrations_json, monitoring_rules_json, deployment_targets_json, "
+                    "industry_template, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (blueprint_id, company_id, domain,
+                     json.dumps(agents or []), json.dumps(workflows or []),
+                     json.dumps(integrations or []), json.dumps(monitoring_rules or []),
+                     json.dumps(deployment_targets or []), industry_template, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        return blueprint_id
+
+    async def get_blueprint(self, blueprint_id: str = None,
+                            company_id: str = None) -> Optional[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if blueprint_id:
+                    row = conn.execute("SELECT * FROM demo_blueprints WHERE blueprint_id=?",
+                                       (blueprint_id,)).fetchone()
+                elif company_id:
+                    row = conn.execute(
+                        "SELECT * FROM demo_blueprints WHERE company_id=? "
+                        "ORDER BY created_at DESC LIMIT 1", (company_id,)).fetchone()
+                else:
+                    row = None
+                return dict(row) if row else None
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_blueprints(self, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT db.*, cp.name, cp.industry FROM demo_blueprints db "
+                    "LEFT JOIN company_profiles cp ON db.company_id = cp.company_id "
+                    "ORDER BY db.created_at DESC LIMIT ?", (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def generate_blueprint_prompt(self, company_id: str) -> str:
+        """Build prompt for AI-driven blueprint generation."""
+        def _q():
+            conn = _db_connect()
+            try:
+                profile = conn.execute("SELECT * FROM company_profiles WHERE company_id=?",
+                                       (company_id,)).fetchone()
+                research = conn.execute("SELECT * FROM company_research WHERE company_id=? "
+                                        "ORDER BY created_at DESC LIMIT 1",
+                                        (company_id,)).fetchone()
+                return dict(profile) if profile else None, dict(research) if research else None
+            finally:
+                conn.close()
+        profile, research = await asyncio.to_thread(_q)
+        if not profile:
+            return ""
+        use_cases = json.loads(research.get("ai_use_cases_json", "[]")) if research else []
+        return (
+            f"Generate a demo AI system blueprint for {profile['name']}:\n"
+            f"Industry: {profile.get('industry', '')}\n"
+            f"Size: {profile.get('size_estimate', '')}\n"
+            f"AI Use Cases: {json.dumps(use_cases)}\n\n"
+            f"Include: agents list, workflows, integrations, monitoring rules, "
+            f"deployment targets. Return as JSON."
+        )
+
+
+class ProposalGenerator:
+    """Module 7: Proposal Generation — structured deployment proposals."""
+
+    async def create_proposal(self, company_id: str, blueprint_id: str = "",
+                              architecture: str = "", problem: str = "",
+                              security_model: str = "", deployment_approach: str = "",
+                              cost: float = 0.0, roi: float = 0.0,
+                              benefits: str = "") -> str:
+        proposal_id = f"prop-{uuid.uuid4().hex[:10]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO system_proposals "
+                    "(proposal_id, company_id, blueprint_id, architecture_summary, "
+                    "problem_summary, security_model, deployment_approach, "
+                    "estimated_cost, estimated_roi, expected_benefits, status, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (proposal_id, company_id, blueprint_id, architecture, problem,
+                     security_model, deployment_approach, cost, roi, benefits,
+                     "draft", time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        return proposal_id
+
+    async def update_status(self, proposal_id: str, status: str):
+        """Update proposal status: draft, sent, accepted, rejected, negotiating."""
+        def _up():
+            conn = _db_connect()
+            try:
+                conn.execute("UPDATE system_proposals SET status=? WHERE proposal_id=?",
+                             (status, proposal_id))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_up)
+
+    async def get_proposals(self, company_id: str = None, status: str = None,
+                            limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                where = []
+                params = []
+                if company_id:
+                    where.append("sp.company_id=?")
+                    params.append(company_id)
+                if status:
+                    where.append("sp.status=?")
+                    params.append(status)
+                clause = f"WHERE {' AND '.join(where)}" if where else ""
+                params.append(limit)
+                return [dict(r) for r in conn.execute(
+                    f"SELECT sp.*, cp.name, cp.industry FROM system_proposals sp "
+                    f"LEFT JOIN company_profiles cp ON sp.company_id = cp.company_id "
+                    f"{clause} ORDER BY sp.created_at DESC LIMIT ?", params).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_stats(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                total = conn.execute("SELECT COUNT(*) FROM system_proposals").fetchone()[0]
+                by_status = {}
+                for row in conn.execute(
+                    "SELECT status, COUNT(*) as cnt FROM system_proposals GROUP BY status"):
+                    by_status[row["status"]] = row["cnt"]
+                total_value = conn.execute(
+                    "SELECT COALESCE(SUM(estimated_cost), 0) FROM system_proposals "
+                    "WHERE status='accepted'").fetchone()[0]
+                return {"total": total, "by_status": by_status,
+                        "accepted_value": total_value}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class DeploymentTrigger:
+    """Module 8: Deployment Trigger — convert proposals to SWARM builds."""
+
+    async def create_deployment(self, company_id: str, blueprint_id: str = "",
+                                proposal_id: str = "", environment: str = "",
+                                plan: Dict = None) -> str:
+        deployment_id = f"dep-{uuid.uuid4().hex[:10]}"
+        now = time.time()
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO deployments "
+                    "(deployment_id, company_id, blueprint_id, proposal_id, "
+                    "deployment_status, environment_target, deployment_plan_json, "
+                    "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (deployment_id, company_id, blueprint_id, proposal_id,
+                     "planned", environment, json.dumps(plan or {}), now, now))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        return deployment_id
+
+    async def update_status(self, deployment_id: str, status: str,
+                            monitoring_url: str = None):
+        def _up():
+            conn = _db_connect()
+            try:
+                if monitoring_url:
+                    conn.execute(
+                        "UPDATE deployments SET deployment_status=?, monitoring_url=?, "
+                        "updated_at=? WHERE deployment_id=?",
+                        (status, monitoring_url, time.time(), deployment_id))
+                else:
+                    conn.execute(
+                        "UPDATE deployments SET deployment_status=?, updated_at=? "
+                        "WHERE deployment_id=?", (status, time.time(), deployment_id))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_up)
+
+    async def get_deployments(self, status: str = None, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if status:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT d.*, cp.name FROM deployments d "
+                        "LEFT JOIN company_profiles cp ON d.company_id = cp.company_id "
+                        "WHERE d.deployment_status=? ORDER BY d.updated_at DESC LIMIT ?",
+                        (status, limit)).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT d.*, cp.name FROM deployments d "
+                    "LEFT JOIN company_profiles cp ON d.company_id = cp.company_id "
+                    "ORDER BY d.updated_at DESC LIMIT ?", (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def trigger_from_proposal(self, proposal_id: str) -> Optional[str]:
+        """Auto-trigger deployment when proposal is accepted."""
+        def _q():
+            conn = _db_connect()
+            try:
+                row = conn.execute("SELECT * FROM system_proposals WHERE proposal_id=?",
+                                   (proposal_id,)).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+        proposal = await asyncio.to_thread(_q)
+        if not proposal or proposal.get("status") != "accepted":
+            return None
+
+        plan = {
+            "source": "auto_trigger",
+            "proposal_id": proposal_id,
+            "architecture": proposal.get("architecture_summary", ""),
+            "steps": [
+                "provision_infrastructure",
+                "deploy_core_services",
+                "configure_agents",
+                "setup_monitoring",
+                "run_validation",
+                "handoff_to_client",
+            ],
+        }
+        dep_id = await self.create_deployment(
+            proposal["company_id"], proposal.get("blueprint_id", ""),
+            proposal_id, "cloud", plan)
+        return dep_id
+
+
+class RevenueTracker:
+    """Module 9: Revenue Tracking — economic performance of deployed systems."""
+
+    async def record_revenue(self, company_id: str, deployment_id: str = "",
+                             revenue_type: str = "deployment_fee",
+                             amount: float = 0.0, billing_period: str = "",
+                             notes: str = "") -> str:
+        revenue_id = f"rev-{uuid.uuid4().hex[:10]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO client_revenue "
+                    "(revenue_id, company_id, deployment_id, revenue_type, amount, "
+                    "billing_period, notes, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (revenue_id, company_id, deployment_id, revenue_type,
+                     amount, billing_period, notes, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        return revenue_id
+
+    async def get_revenue(self, company_id: str = None, limit: int = 30) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if company_id:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT * FROM client_revenue WHERE company_id=? "
+                        "ORDER BY updated_at DESC LIMIT ?", (company_id, limit)).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT cr.*, cp.name FROM client_revenue cr "
+                    "LEFT JOIN company_profiles cp ON cr.company_id = cp.company_id "
+                    "ORDER BY cr.updated_at DESC LIMIT ?", (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_stats(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                total = conn.execute(
+                    "SELECT COALESCE(SUM(amount), 0) FROM client_revenue").fetchone()[0]
+                mrr = conn.execute(
+                    "SELECT COALESCE(SUM(amount), 0) FROM client_revenue "
+                    "WHERE revenue_type='monthly_recurring'").fetchone()[0]
+                clients = conn.execute(
+                    "SELECT COUNT(DISTINCT company_id) FROM client_revenue").fetchone()[0]
+                by_type = {}
+                for row in conn.execute(
+                    "SELECT revenue_type, SUM(amount) as total FROM client_revenue "
+                    "GROUP BY revenue_type"):
+                    by_type[row["revenue_type"]] = row["total"]
+                return {"total_revenue": total, "mrr": mrr,
+                        "active_clients": clients, "by_type": by_type}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class RelationshipLearner:
+    """Module 10: Learning & Optimization — improve from relationship outcomes."""
+
+    async def record_outcome(self, company_id: str, stage_reached: str,
+                             success: bool = False, revenue: float = 0.0,
+                             lessons: List[str] = None) -> str:
+        outcome_id = f"rout-{uuid.uuid4().hex[:10]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO relationship_outcomes "
+                    "(outcome_id, company_id, stage_reached, success, "
+                    "revenue_generated, lessons_json, created_at) VALUES (?,?,?,?,?,?,?)",
+                    (outcome_id, company_id, stage_reached, 1 if success else 0,
+                     revenue, json.dumps(lessons or []), time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+        return outcome_id
+
+    async def record_optimization(self, strategy_change: str,
+                                  performance_delta: float = 0.0,
+                                  affected_stage: str = ""):
+        update_id = f"opt-{uuid.uuid4().hex[:10]}"
+        def _ins():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO optimization_updates "
+                    "(update_id, strategy_change, performance_delta, "
+                    "affected_stage, timestamp) VALUES (?,?,?,?,?)",
+                    (update_id, strategy_change, performance_delta,
+                     affected_stage, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_ins)
+
+    async def get_outcomes(self, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT ro.*, cp.name FROM relationship_outcomes ro "
+                    "LEFT JOIN company_profiles cp ON ro.company_id = cp.company_id "
+                    "ORDER BY ro.created_at DESC LIMIT ?", (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_conversion_rates(self) -> Dict:
+        """Calculate stage-to-stage conversion rates."""
+        def _q():
+            conn = _db_connect()
+            try:
+                stages = ["detected", "research", "contact_initiated", "conversation_active",
+                          "demo_requested", "proposal_sent", "deployment_in_progress", "active_client"]
+                rates = {}
+                for i in range(len(stages) - 1):
+                    current = conn.execute(
+                        "SELECT COUNT(*) FROM relationship_outcomes WHERE stage_reached=?",
+                        (stages[i],)).fetchone()[0]
+                    next_stage = conn.execute(
+                        "SELECT COUNT(*) FROM relationship_outcomes WHERE stage_reached=?",
+                        (stages[i + 1],)).fetchone()[0]
+                    rates[f"{stages[i]}_to_{stages[i+1]}"] = (
+                        round(next_stage / max(1, current), 3))
+                total_success = conn.execute(
+                    "SELECT COUNT(*) FROM relationship_outcomes WHERE success=1").fetchone()[0]
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM relationship_outcomes").fetchone()[0]
+                rates["overall_success"] = round(total_success / max(1, total), 3)
+                return rates
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_stats(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                total = conn.execute("SELECT COUNT(*) FROM relationship_outcomes").fetchone()[0]
+                successes = conn.execute("SELECT COUNT(*) FROM relationship_outcomes WHERE success=1").fetchone()[0]
+                total_rev = conn.execute("SELECT COALESCE(SUM(revenue_generated), 0) FROM relationship_outcomes").fetchone()[0]
+                optimizations = conn.execute("SELECT COUNT(*) FROM optimization_updates").fetchone()[0]
+                return {"total_outcomes": total, "successes": successes,
+                        "total_revenue": total_rev, "optimizations": optimizations,
+                        "success_rate": round(successes / max(1, total), 3)}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+class OutreachCompliance:
+    """Module 11: Ethics & Compliance Guardrails — prevent abusive automation."""
+
+    async def seed_policies(self):
+        """Seed default outreach compliance policies."""
+        defaults = [
+            ("rate_limit_email", "rate_limit", "10", "block", 10, 72),
+            ("rate_limit_linkedin", "rate_limit", "5", "block", 5, 48),
+            ("opt_out_honor", "opt_out", "always", "block", 0, 0),
+            ("no_spam", "content_policy", "no_bulk_identical", "block", 0, 0),
+            ("approval_required", "approval_gate", "all_outreach", "require_approval", 0, 0),
+            ("gdpr_compliance", "data_policy", "gdpr_aware", "warn", 0, 0),
+            ("can_spam_compliance", "content_policy", "include_opt_out", "enforce", 0, 0),
+        ]
+        def _seed():
+            conn = _db_connect()
+            try:
+                for pid, rtype, rval, action, max_day, cooldown in defaults:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO outreach_policies "
+                        "(policy_id, rule_type, rule_value, enforcement_action, "
+                        "max_per_day, cooldown_hours, updated_at) VALUES (?,?,?,?,?,?,?)",
+                        (pid, rtype, rval, action, max_day, cooldown, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_seed)
+
+    async def check_compliance(self, company_id: str, channel: str) -> Dict:
+        """Check if outreach to company via channel is compliant."""
+        def _check():
+            conn = _db_connect()
+            try:
+                # Check rate limits
+                now = time.time()
+                day_ago = now - 86400
+                sent_today = conn.execute(
+                    "SELECT COUNT(*) FROM outreach_messages "
+                    "WHERE channel=? AND sent_at > ? AND response_status='sent'",
+                    (channel, day_ago)).fetchone()[0]
+
+                # Get rate limit policy for channel
+                policy = conn.execute(
+                    "SELECT * FROM outreach_policies WHERE rule_type='rate_limit' "
+                    "AND policy_id LIKE ?", (f"rate_limit_{channel}%",)).fetchone()
+                max_daily = policy["max_per_day"] if policy else 10
+                cooldown_h = policy["cooldown_hours"] if policy else 72
+
+                # Check cooldown for this company
+                last_sent = conn.execute(
+                    "SELECT MAX(sent_at) FROM outreach_messages "
+                    "WHERE company_id=? AND channel=? AND sent_at IS NOT NULL",
+                    (company_id, channel)).fetchone()[0]
+                cooldown_ok = (last_sent is None or
+                               (now - last_sent) > cooldown_h * 3600)
+
+                # Check opt-out
+                opted_out = conn.execute(
+                    "SELECT COUNT(*) FROM outreach_messages "
+                    "WHERE company_id=? AND response_status='opted_out'",
+                    (company_id,)).fetchone()[0]
+
+                violations = []
+                if sent_today >= max_daily:
+                    violations.append(f"Rate limit exceeded: {sent_today}/{max_daily} today")
+                if not cooldown_ok:
+                    violations.append(f"Cooldown active: last contact < {cooldown_h}h ago")
+                if opted_out > 0:
+                    violations.append("Company has opted out of communications")
+
+                return {
+                    "compliant": len(violations) == 0,
+                    "violations": violations,
+                    "sent_today": sent_today,
+                    "max_daily": max_daily,
+                    "cooldown_ok": cooldown_ok,
+                    "opted_out": opted_out > 0,
+                }
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_check)
+
+    async def get_policies(self) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM outreach_policies ORDER BY rule_type").fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_stats(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                policies = conn.execute("SELECT COUNT(*) FROM outreach_policies").fetchone()[0]
+                opted_out = conn.execute(
+                    "SELECT COUNT(DISTINCT company_id) FROM outreach_messages "
+                    "WHERE response_status='opted_out'").fetchone()[0]
+                blocked = conn.execute(
+                    "SELECT COUNT(*) FROM outreach_messages "
+                    "WHERE response_status='blocked'").fetchone()[0]
+                return {"policies": policies, "opted_out_companies": opted_out,
+                        "blocked_messages": blocked}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+# Instantiate Relationship Engine services
+signal_discovery = SignalDiscovery()
+opportunity_qualifier = OpportunityQualifier()
+relationship_pipeline = RelationshipPipeline()
+research_agent = ResearchAgent()
+outreach_generator = OutreachGenerator()
+demo_generator = DemoGenerator()
+proposal_generator = ProposalGenerator()
+deployment_trigger = DeploymentTrigger()
+revenue_tracker = RevenueTracker()
+relationship_learner = RelationshipLearner()
+outreach_compliance = OutreachCompliance()
+
+
+# ---------------------------------------------------------------------------
 # Dashboard API
 # ---------------------------------------------------------------------------
 
@@ -6377,6 +7699,44 @@ async def dashboard_execution(request: web.Request) -> web.Response:
             "pending_approvals": pending,
             "risk_policy": risk_policy,
             "blocked_patterns": blocked,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_pipeline(request: web.Request) -> web.Response:
+    """Dashboard relationship pipeline endpoint."""
+    try:
+        pipe_stats = await relationship_pipeline.get_stats()
+        pipeline = await relationship_pipeline.get_pipeline(limit=20)
+        recent_events = await relationship_pipeline.get_events(limit=15)
+        signal_stats = await signal_discovery.get_stats()
+        return web.json_response({
+            "pipeline_stats": pipe_stats,
+            "pipeline": pipeline,
+            "recent_events": recent_events,
+            "signal_stats": signal_stats,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_opportunities(request: web.Request) -> web.Response:
+    """Dashboard opportunities and revenue endpoint."""
+    try:
+        top_opps = await opportunity_qualifier.get_top_opportunities(15)
+        proposal_stats = await proposal_generator.get_stats()
+        revenue_stats = await revenue_tracker.get_stats()
+        outreach_stats = await outreach_generator.get_stats()
+        compliance_stats = await outreach_compliance.get_stats()
+        learning_stats = await relationship_learner.get_stats()
+        return web.json_response({
+            "top_opportunities": top_opps,
+            "proposals": proposal_stats,
+            "revenue": revenue_stats,
+            "outreach": outreach_stats,
+            "compliance": compliance_stats,
+            "learning": learning_stats,
         })
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
@@ -6897,6 +8257,16 @@ SLASH_COMMANDS = {
     # Structured Execution
     "actions": "Structured actions (/actions recent|stats|policies|audit|blocked)",
     "execution": "Execution engine (/execution status|results)",
+    # Relationship & Opportunity Engine
+    "signals": "Company signals (/signals recent|stats|sources)",
+    "opportunities": "Opportunity scoring (/opportunities top|profiles)",
+    "pipeline": "Relationship pipeline (/pipeline overview|events|<stage>)",
+    "research": "Company research (/research list)",
+    "outreach": "Outreach messages (/outreach recent|stats|compliance)",
+    "proposals": "System proposals (/proposals list|stats)",
+    "revenue": "Revenue tracking (/revenue summary|recent|conversions)",
+    "deployments": "Client deployments (/deployments list)",
+    "crm": "CRM overview (/crm)",
     # Core
     "memory": "Show persistent memory stats (/memory search|distill <query>)",
     "forget": "Clear memory (/forget, /forget all, /forget thread, /forget channel)",
@@ -8500,6 +9870,266 @@ async def handle_slash_command(cmd: str, args: str, channel: str, thread_ts: str
             await post_message(":gear: */execution* commands: `status`, `results`", channel, thread_ts)
         return True
 
+    # -----------------------------------------------------------------------
+    # Proactive Relationship & Opportunity Engine Commands
+    # -----------------------------------------------------------------------
+
+    if cmd == "signals":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "recent"
+
+        if subcmd == "recent":
+            signals = await signal_discovery.get_signals(limit=10)
+            lines = [":satellite: *Recent Company Signals*\n"]
+            if not signals:
+                lines.append("_No signals detected yet._")
+            for s in signals:
+                proc = ":white_check_mark:" if s.get("processed") else ":new:"
+                lines.append(f"{proc} *{s.get('company_name', '?')}* — {s.get('signal_type', '?')} via {s.get('signal_source', '?')}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "stats":
+            stats = await signal_discovery.get_stats()
+            lines = [":bar_chart: *Signal Stats*\n"]
+            lines.append(f"*Total signals:* {stats.get('total_signals', 0)}")
+            lines.append(f"*Unprocessed:* {stats.get('unprocessed', 0)}")
+            lines.append(f"*Sources:* {stats.get('sources', 0)}")
+            by_type = stats.get("by_type", {})
+            if by_type:
+                lines.append("*By type:*")
+                for t, c in sorted(by_type.items(), key=lambda x: -x[1]):
+                    lines.append(f"  {t}: {c}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "sources":
+            sources = await signal_discovery.get_sources()
+            lines = [":antenna_bars: *Signal Sources*\n"]
+            for s in sources:
+                enabled = ":large_green_circle:" if s.get("enabled") else ":red_circle:"
+                lines.append(f"{enabled} `{s.get('source_type', '?')}` — poll every {s.get('polling_interval', 0)}s")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":satellite: */signals* commands: `recent`, `stats`, `sources`", channel, thread_ts)
+        return True
+
+    if cmd == "opportunities":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "top"
+
+        if subcmd == "top":
+            opps = await opportunity_qualifier.get_top_opportunities(10)
+            lines = [":dart: *Top Opportunities*\n"]
+            if not opps:
+                lines.append("_No opportunities scored yet._")
+            for o in opps:
+                score = o.get("ai_fit_score") or o.get("ai_need_score", 0)
+                val = o.get("estimated_value", 0)
+                lines.append(f":star: *{o.get('name', '?')}* [{o.get('industry', '?')}] — AI fit: {score:.0%} | Est: ${val:,.0f}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "profiles":
+            profiles = await opportunity_qualifier.get_profiles(10)
+            lines = [":office: *Company Profiles*\n"]
+            for p in profiles:
+                lines.append(f"• *{p.get('name', '?')}* ({p.get('industry', '?')}, {p.get('size_estimate', '?')}) — AI={p.get('ai_need_score', 0):.2f}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":dart: */opportunities* commands: `top`, `profiles`", channel, thread_ts)
+        return True
+
+    if cmd == "pipeline":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "overview"
+
+        if subcmd == "overview":
+            stats = await relationship_pipeline.get_stats()
+            lines = [":pipeline: *Relationship Pipeline*\n"]
+            lines.append(f"*Total relationships:* {stats.get('total_relationships', 0)}")
+            by_stage = stats.get("by_stage", {})
+            stage_icons = {
+                "detected": ":mag:", "research": ":books:", "contact_initiated": ":wave:",
+                "conversation_active": ":speech_balloon:", "demo_requested": ":tv:",
+                "proposal_sent": ":page_facing_up:", "deployment_in_progress": ":rocket:",
+                "active_client": ":handshake:",
+            }
+            for stage in RelationshipPipeline.STAGES:
+                count = by_stage.get(stage, 0)
+                icon = stage_icons.get(stage, ":record_button:")
+                lines.append(f"  {icon} {stage}: {count}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "events":
+            events = await relationship_pipeline.get_events(limit=10)
+            lines = [":clock: *Recent Pipeline Events*\n"]
+            for e in events:
+                lines.append(f"• [{e.get('event_type', '?')}] {e.get('company_id', '?')[:12]} — {json.loads(e.get('event_details_json', '{}')).get('notes', '')[:60]}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            stage_filter = subcmd
+            if stage_filter in RelationshipPipeline.STAGES:
+                entries = await relationship_pipeline.get_pipeline(stage=stage_filter, limit=10)
+                lines = [f":pipeline: *Pipeline — {stage_filter}*\n"]
+                for e in entries:
+                    lines.append(f"• *{e.get('name', e.get('company_id', '?'))}* — {e.get('notes', '')[:60]}")
+                await post_message("\n".join(lines), channel, thread_ts)
+            else:
+                await post_message(":pipeline: */pipeline* commands: `overview`, `events`, or a stage name", channel, thread_ts)
+        return True
+
+    if cmd == "research":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "list"
+
+        if subcmd == "list":
+            research = await research_agent.get_all_research(10)
+            lines = [":microscope: *Company Research*\n"]
+            if not research:
+                lines.append("_No research profiles yet._")
+            for r in research:
+                lines.append(f"• *{r.get('name', r.get('company_id', '?'))}* — {(r.get('summary', '') or '')[:80]}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":microscope: */research* commands: `list`", channel, thread_ts)
+        return True
+
+    if cmd == "outreach":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "recent"
+
+        if subcmd == "recent":
+            msgs = await outreach_generator.get_messages(limit=10)
+            lines = [":envelope: *Recent Outreach*\n"]
+            if not msgs:
+                lines.append("_No outreach messages yet._")
+            for m in msgs:
+                status_icon = {
+                    "draft": ":pencil:", "approved": ":white_check_mark:",
+                    "sent": ":outbox_tray:", "replied": ":incoming_envelope:",
+                    "interested": ":star:", "declined": ":x:",
+                    "opted_out": ":no_entry:",
+                }.get(m.get("response_status", ""), ":grey_question:")
+                lines.append(f"{status_icon} [{m.get('channel', '?')}] {m.get('company_id', '?')[:12]} — _{m.get('response_status', '?')}_")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "stats":
+            stats = await outreach_generator.get_stats()
+            lines = [":bar_chart: *Outreach Stats*\n"]
+            lines.append(f"*Total messages:* {stats.get('total', 0)}")
+            by_status = stats.get("by_status", {})
+            for s, c in by_status.items():
+                lines.append(f"  {s}: {c}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "compliance":
+            comp_stats = await outreach_compliance.get_stats()
+            policies = await outreach_compliance.get_policies()
+            lines = [":shield: *Outreach Compliance*\n"]
+            lines.append(f"*Policies:* {comp_stats.get('policies', 0)}")
+            lines.append(f"*Opted-out companies:* {comp_stats.get('opted_out_companies', 0)}")
+            lines.append(f"*Blocked messages:* {comp_stats.get('blocked_messages', 0)}")
+            if policies:
+                lines.append("\n*Active Policies:*")
+                for p in policies:
+                    lines.append(f"  • {p.get('rule_type', '?')}: {p.get('enforcement_action', '?')}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":envelope: */outreach* commands: `recent`, `stats`, `compliance`", channel, thread_ts)
+        return True
+
+    if cmd == "proposals":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "list"
+
+        if subcmd == "list":
+            proposals = await proposal_generator.get_proposals(limit=10)
+            lines = [":page_facing_up: *Proposals*\n"]
+            if not proposals:
+                lines.append("_No proposals yet._")
+            for p in proposals:
+                lines.append(f"• *{p.get('name', p.get('company_id', '?'))}* — ${p.get('estimated_cost', 0):,.0f} | ROI: {p.get('estimated_roi', 0):.0%} | _{p.get('status', '?')}_")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "stats":
+            stats = await proposal_generator.get_stats()
+            lines = [":bar_chart: *Proposal Stats*\n"]
+            lines.append(f"*Total:* {stats.get('total', 0)}")
+            for s, c in stats.get("by_status", {}).items():
+                lines.append(f"  {s}: {c}")
+            lines.append(f"*Accepted value:* ${stats.get('accepted_value', 0):,.0f}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":page_facing_up: */proposals* commands: `list`, `stats`", channel, thread_ts)
+        return True
+
+    if cmd == "revenue":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "summary"
+
+        if subcmd == "summary":
+            stats = await revenue_tracker.get_stats()
+            lines = [":money_with_wings: *Revenue Summary*\n"]
+            lines.append(f"*Total revenue:* ${stats.get('total_revenue', 0):,.2f}")
+            lines.append(f"*MRR:* ${stats.get('mrr', 0):,.2f}")
+            lines.append(f"*Active clients:* {stats.get('active_clients', 0)}")
+            by_type = stats.get("by_type", {})
+            if by_type:
+                lines.append("*By type:*")
+                for t, v in by_type.items():
+                    lines.append(f"  {t}: ${v:,.2f}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "recent":
+            revenue = await revenue_tracker.get_revenue(limit=10)
+            lines = [":receipt: *Recent Revenue*\n"]
+            for r in revenue:
+                lines.append(f"• {r.get('name', r.get('company_id', '?'))} — ${r.get('amount', 0):,.2f} ({r.get('revenue_type', '?')})")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "conversions":
+            rates = await relationship_learner.get_conversion_rates()
+            lines = [":chart_with_upwards_trend: *Conversion Rates*\n"]
+            for stage, rate in rates.items():
+                lines.append(f"  {stage}: {rate:.1%}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":money_with_wings: */revenue* commands: `summary`, `recent`, `conversions`", channel, thread_ts)
+        return True
+
+    if cmd == "deployments":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "list"
+
+        if subcmd == "list":
+            deps = await deployment_trigger.get_deployments(limit=10)
+            lines = [":rocket: *Deployments*\n"]
+            if not deps:
+                lines.append("_No deployments yet._")
+            for d in deps:
+                status_icon = {
+                    "planned": ":clipboard:", "provisioning": ":gear:",
+                    "deploying": ":rocket:", "active": ":large_green_circle:",
+                    "failed": ":red_circle:",
+                }.get(d.get("deployment_status", ""), ":grey_question:")
+                lines.append(f"{status_icon} *{d.get('name', d.get('company_id', '?'))}* — _{d.get('deployment_status', '?')}_")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":rocket: */deployments* commands: `list`", channel, thread_ts)
+        return True
+
+    if cmd == "crm":
+        # Unified CRM overview
+        pipe_stats = await relationship_pipeline.get_stats()
+        signal_stats = await signal_discovery.get_stats()
+        outreach_stats = await outreach_generator.get_stats()
+        proposal_stats = await proposal_generator.get_stats()
+        rev_stats = await revenue_tracker.get_stats()
+        learning_stats = await relationship_learner.get_stats()
+
+        lines = [":briefcase: *CRM — Relationship Engine Overview*\n"]
+        lines.append(f":satellite: *Signals:* {signal_stats.get('total_signals', 0)} detected | {signal_stats.get('unprocessed', 0)} unprocessed")
+        lines.append(f":office: *Pipeline:* {pipe_stats.get('total_relationships', 0)} relationships")
+        by_stage = pipe_stats.get("by_stage", {})
+        active_stages = [f"{s}:{c}" for s, c in by_stage.items() if c > 0]
+        if active_stages:
+            lines.append(f"  Stages: {', '.join(active_stages)}")
+        lines.append(f":envelope: *Outreach:* {outreach_stats.get('total', 0)} messages")
+        lines.append(f":page_facing_up: *Proposals:* {proposal_stats.get('total', 0)} | Accepted value: ${proposal_stats.get('accepted_value', 0):,.0f}")
+        lines.append(f":money_with_wings: *Revenue:* ${rev_stats.get('total_revenue', 0):,.2f} total | MRR: ${rev_stats.get('mrr', 0):,.2f}")
+        lines.append(f":brain: *Learning:* {learning_stats.get('total_outcomes', 0)} outcomes | {learning_stats.get('success_rate', 0):.0%} success rate")
+        await post_message("\n".join(lines), channel, thread_ts)
+        return True
+
     return False
 
 
@@ -8800,7 +10430,7 @@ async def handle_health(request: web.Request) -> web.Response:
     return web.json_response({
         "status": "healthy",
         "service": "bunny-alpha",
-        "version": "3.1.0",
+        "version": "3.2.0",
         "active_tasks": len(active),
         "total_tasks": len(task_manager.tasks),
         "providers": {
@@ -8847,7 +10477,7 @@ async def on_startup(app: web.Application):
     if result.get("ok"):
         BOT_USER_ID = result["user_id"]
         log.info(
-            f"Bunny Alpha v3.1 online | bot={result['user']} | "
+            f"Bunny Alpha v3.2 online | bot={result['user']} | "
             f"team={result['team']} | user_id={BOT_USER_ID}"
         )
     else:
@@ -8963,6 +10593,17 @@ async def on_startup(app: web.Application):
     except Exception as e:
         log.warning(f"Action policy seed error: {e}")
 
+    # Relationship & Opportunity Engine initialization
+    try:
+        await signal_discovery.seed_sources()
+        sources = await signal_discovery.get_sources()
+        log.info(f"Signal sources seeded: {len(sources)} sources")
+        await outreach_compliance.seed_policies()
+        compliance_policies = await outreach_compliance.get_policies()
+        log.info(f"Outreach compliance: {len(compliance_policies)} policies")
+    except Exception as e:
+        log.warning(f"Relationship engine init error: {e}")
+
     log.info(f"Listening on port {PORT}")
 
     # Start background services
@@ -8971,7 +10612,7 @@ async def on_startup(app: web.Application):
     await scheduler.start_scheduler_loop()
     await intel_loop.start_loop(3600)  # Intelligence loop every hour
 
-    await audit.log("system_startup", payload={"version": "3.1.0"})
+    await audit.log("system_startup", payload={"version": "3.2.0"})
 
 
 async def _periodic_cleanup():
@@ -9021,8 +10662,10 @@ def main():
     app.router.add_get("/dashboard/system", dashboard_system)
     app.router.add_get("/dashboard/actions", dashboard_actions)
     app.router.add_get("/dashboard/execution", dashboard_execution)
+    app.router.add_get("/dashboard/pipeline", dashboard_pipeline)
+    app.router.add_get("/dashboard/opportunities", dashboard_opportunities)
 
-    log.info("Starting Bunny Alpha v3.1 \u2014 Autonomous Operations Platform")
+    log.info("Starting Bunny Alpha v3.2 \u2014 Autonomous Operations Platform")
     web.run_app(app, host="0.0.0.0", port=PORT)
 
 
