@@ -240,6 +240,13 @@
       "file": "BSA-37-dual-agent-user-model.md",
       "status": "active",
       "description": "Defines enterprise agent + personal agent coordination, domain separation, and shared memory bridge"
+    },
+    {
+      "id": "BSA-38",
+      "name": "Unified Life & Work Intelligence",
+      "file": "BSA-38-unified-life-work-intelligence.md",
+      "status": "active",
+      "description": "Defines life/work balance intelligence, cross-domain coordination, and human productivity optimization"
     }
   ]
 }
