@@ -212,6 +212,13 @@
       "file": "BSA-33-household-home-automation.md",
       "status": "active",
       "description": "Defines smart home integration, domestic automation, and household coordination via Jenny"
+    },
+    {
+      "id": "BSA-34",
+      "name": "Personal Finance & Life Management",
+      "file": "BSA-34-personal-finance-life-management.md",
+      "status": "active",
+      "description": "Defines financial organization, life logistics, and personal resource management via Jenny"
     }
   ]
 }
