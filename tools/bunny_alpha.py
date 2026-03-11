@@ -30,9 +30,10 @@ import os
 import re
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Deque, List, Optional, Tuple
 
 from aiohttp import web, ClientSession, ClientTimeout
 
@@ -71,6 +72,51 @@ VMS = {
 }
 
 MAX_CONCURRENT_TASKS = 5
+MEMORY_SIZE = 50  # messages per channel
+
+
+# ---------------------------------------------------------------------------
+# Conversation Memory
+# ---------------------------------------------------------------------------
+
+class ConversationMemory:
+    """Per-channel message history for context-aware conversations."""
+
+    def __init__(self, max_per_channel: int = MEMORY_SIZE):
+        self.max = max_per_channel
+        self._channels: Dict[str, Deque[Dict[str, str]]] = {}
+
+    def add(self, channel: str, role: str, content: str):
+        """Store a message. role = 'user' or 'assistant'."""
+        if channel not in self._channels:
+            self._channels[channel] = deque(maxlen=self.max)
+        self._channels[channel].append({
+            "role": role,
+            "content": content,
+            "ts": time.time(),
+        })
+
+    def get_history(self, channel: str) -> List[Dict[str, str]]:
+        """Return message history as [{role, content}, ...] for AI context."""
+        msgs = self._channels.get(channel, [])
+        return [{"role": m["role"], "content": m["content"]} for m in msgs]
+
+    def clear(self, channel: str):
+        """Clear history for a channel."""
+        if channel in self._channels:
+            self._channels[channel].clear()
+
+    def clear_all(self):
+        """Clear all history."""
+        self._channels.clear()
+
+    def stats(self) -> Dict[str, int]:
+        """Return message counts per channel."""
+        return {ch: len(msgs) for ch, msgs in self._channels.items()}
+
+
+memory = ConversationMemory()
+
 
 # ---------------------------------------------------------------------------
 # Bunny Alpha System Prompt
@@ -93,6 +139,7 @@ Available tools:
 - docker: Docker command. Args: host, cmd (e.g. "ps", "logs swarm", "restart swarm")
 - ollama: Query Ollama model. Args: model, prompt
 - http: HTTP request. Args: url, method (GET/POST), body (optional)
+- image: Generate an image. Args: prompt (description of image to generate)
 
 Available hosts: swarm-mainframe (local), swarm-gpu, fc-ai-portal, calculus-web
 
@@ -284,6 +331,7 @@ class ToolExecutor:
             "docker": self.exec_docker,
             "ollama": self.exec_ollama,
             "http": self.exec_http,
+            "image": self.exec_image_gen,
         }
         handler = handlers.get(tool)
         if not handler:
@@ -422,6 +470,36 @@ class ToolExecutor:
         except Exception as e:
             return f"[ERROR] HTTP: {e}"
 
+    async def exec_image_gen(self, host: str, cmd: str) -> str:
+        """Generate an image using xAI Grok image generation."""
+        if not XAI_API_KEY:
+            return "[ERROR] XAI_API_KEY not set — cannot generate images"
+        try:
+            async with _session.post(
+                "https://api.x.ai/v1/images/generations",
+                headers={
+                    "Authorization": f"Bearer {XAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "grok-2-image",
+                    "prompt": cmd,
+                    "n": 1,
+                    "response_format": "url",
+                },
+                timeout=ClientTimeout(total=120),
+            ) as resp:
+                data = await resp.json()
+                if "data" in data and data["data"]:
+                    image_url = data["data"][0].get("url", "")
+                    if image_url:
+                        return f"IMAGE_URL:{image_url}"
+                    return "[ERROR] No image URL in response"
+                error = data.get("error", {}).get("message", str(data))
+                return f"[ERROR] Image generation: {error}"
+        except Exception as e:
+            return f"[ERROR] Image generation: {e}"
+
 
 # Singleton instances
 task_manager = TaskManager()
@@ -432,11 +510,20 @@ tool_executor = ToolExecutor()
 # AI Model Providers
 # ---------------------------------------------------------------------------
 
-async def query_deepseek(prompt: str, system: str) -> Optional[str]:
-    """Query DeepSeek API directly."""
+def _build_messages(system: str, history: List[Dict[str, str]], prompt: str) -> List[Dict[str, str]]:
+    """Build message array: system + history + current prompt."""
+    messages = [{"role": "system", "content": system}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": prompt})
+    return messages
+
+
+async def query_deepseek(prompt: str, system: str, history: Optional[List[Dict]] = None) -> Optional[str]:
+    """Query DeepSeek API with conversation history."""
     if not DEEPSEEK_API_KEY:
         return None
     try:
+        messages = _build_messages(system, history or [], prompt)
         async with _session.post(
             "https://api.deepseek.com/v1/chat/completions",
             headers={
@@ -445,10 +532,7 @@ async def query_deepseek(prompt: str, system: str) -> Optional[str]:
             },
             json={
                 "model": "deepseek-chat",
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt},
-                ],
+                "messages": messages,
                 "max_tokens": 2000,
                 "temperature": 0.7,
             },
@@ -464,11 +548,12 @@ async def query_deepseek(prompt: str, system: str) -> Optional[str]:
         return None
 
 
-async def query_groq(prompt: str, system: str) -> Optional[str]:
-    """Query Groq API directly."""
+async def query_groq(prompt: str, system: str, history: Optional[List[Dict]] = None) -> Optional[str]:
+    """Query Groq API with conversation history."""
     if not GROQ_API_KEY:
         return None
     try:
+        messages = _build_messages(system, history or [], prompt)
         async with _session.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={
@@ -477,10 +562,7 @@ async def query_groq(prompt: str, system: str) -> Optional[str]:
             },
             json={
                 "model": "meta-llama/llama-4-scout-17b-16e-instruct",
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt},
-                ],
+                "messages": messages,
                 "max_tokens": 2000,
                 "temperature": 0.7,
             },
@@ -496,11 +578,12 @@ async def query_groq(prompt: str, system: str) -> Optional[str]:
         return None
 
 
-async def query_xai(prompt: str, system: str) -> Optional[str]:
-    """Query xAI/Grok API directly."""
+async def query_xai(prompt: str, system: str, history: Optional[List[Dict]] = None) -> Optional[str]:
+    """Query xAI/Grok API with conversation history."""
     if not XAI_API_KEY:
         return None
     try:
+        messages = _build_messages(system, history or [], prompt)
         async with _session.post(
             "https://api.x.ai/v1/chat/completions",
             headers={
@@ -509,10 +592,7 @@ async def query_xai(prompt: str, system: str) -> Optional[str]:
             },
             json={
                 "model": "grok-3-fast",
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt},
-                ],
+                "messages": messages,
                 "max_tokens": 2000,
                 "temperature": 0.7,
             },
@@ -528,19 +608,17 @@ async def query_xai(prompt: str, system: str) -> Optional[str]:
         return None
 
 
-async def query_ollama_chat(prompt: str, system: str) -> Optional[str]:
-    """Query local Ollama instance for chat."""
+async def query_ollama_chat(prompt: str, system: str, history: Optional[List[Dict]] = None) -> Optional[str]:
+    """Query local Ollama instance with conversation history."""
     if not OLLAMA_URL:
         return None
     try:
+        messages = _build_messages(system, history or [], prompt)
         async with _session.post(
             f"{OLLAMA_URL}/api/chat",
             json={
                 "model": "qwen2.5-coder:7b",
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt},
-                ],
+                "messages": messages,
                 "stream": False,
             },
             timeout=ClientTimeout(total=120),
@@ -555,9 +633,15 @@ async def query_ollama_chat(prompt: str, system: str) -> Optional[str]:
         return None
 
 
-async def query_ai(prompt: str, system: Optional[str] = None) -> str:
-    """Query AI with fallback chain: DeepSeek -> Groq -> xAI -> Ollama."""
+async def query_ai(prompt: str, system: Optional[str] = None,
+                   channel: Optional[str] = None) -> str:
+    """Query AI with fallback chain and conversation history.
+
+    If channel is provided, includes conversation history from that channel.
+    """
     sys_prompt = system or BUNNY_ALPHA_PROMPT
+    history = memory.get_history(channel) if channel else []
+
     providers = [
         ("DeepSeek", query_deepseek),
         ("Groq", query_groq),
@@ -565,9 +649,9 @@ async def query_ai(prompt: str, system: Optional[str] = None) -> str:
         ("Ollama", query_ollama_chat),
     ]
     for name, fn in providers:
-        result = await fn(prompt, sys_prompt)
+        result = await fn(prompt, sys_prompt, history)
         if result:
-            log.info(f"AI response from {name} ({len(result)} chars)")
+            log.info(f"AI response from {name} ({len(result)} chars, {len(history)} history msgs)")
             return result
     return "All AI providers unavailable. Infrastructure check required."
 
@@ -618,6 +702,89 @@ async def update_message(text: str, channel: str, ts: str):
     })
 
 
+async def post_image(image_url: str, alt_text: str, channel: str,
+                     thread_ts: Optional[str] = None, title: str = ""):
+    """Post an image to Slack using blocks."""
+    blocks = [
+        {
+            "type": "image",
+            "image_url": image_url,
+            "alt_text": alt_text or "Generated image",
+        }
+    ]
+    if title:
+        blocks[0]["title"] = {"type": "plain_text", "text": title[:200]}
+
+    payload: Dict[str, Any] = {
+        "channel": channel,
+        "text": alt_text,
+        "blocks": blocks,
+    }
+    if thread_ts:
+        payload["thread_ts"] = thread_ts
+    result = await slack_post("chat.postMessage", payload)
+    if not result.get("ok"):
+        log.error(f"Slack image post failed: {result.get('error')}")
+        # Fallback: post as plain URL
+        await post_message(f":frame_with_picture: {image_url}", channel, thread_ts)
+    return result
+
+
+async def download_slack_file(file_url: str) -> Optional[bytes]:
+    """Download a file from Slack (requires bot token auth)."""
+    try:
+        async with _session.get(
+            file_url,
+            headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
+            timeout=ClientTimeout(total=30),
+        ) as resp:
+            if resp.status == 200:
+                return await resp.read()
+            log.warning(f"Failed to download Slack file: {resp.status}")
+            return None
+    except Exception as e:
+        log.warning(f"Slack file download failed: {e}")
+        return None
+
+
+async def describe_image_with_vision(image_url: str, user_text: str = "") -> Optional[str]:
+    """Use xAI Grok vision to describe/analyze an image."""
+    if not XAI_API_KEY:
+        return None
+    try:
+        prompt = user_text or "Describe this image in detail."
+        async with _session.post(
+            "https://api.x.ai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {XAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "grok-2-vision-latest",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": image_url}},
+                            {"type": "text", "text": prompt},
+                        ],
+                    }
+                ],
+                "max_tokens": 1000,
+                "temperature": 0.7,
+            },
+            timeout=ClientTimeout(total=60),
+        ) as resp:
+            data = await resp.json()
+            if "choices" in data and data["choices"]:
+                return data["choices"][0]["message"]["content"]
+            log.warning(f"Vision API error: {data}")
+            return None
+    except Exception as e:
+        log.warning(f"Vision API failed: {e}")
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Command Router & Parser
 # ---------------------------------------------------------------------------
@@ -631,6 +798,8 @@ SLASH_COMMANDS = {
     "models": "List available Ollama models",
     "logs": "Show recent Bunny Alpha logs",
     "health": "Run health check on all services",
+    "memory": "Show conversation memory stats",
+    "forget": "Clear conversation memory for this channel",
     "help": "Show available commands",
 }
 
@@ -645,6 +814,28 @@ async def handle_slash_command(cmd: str, args: str, channel: str, thread_ts: str
             lines.append(f"\u2022 `/{c}` \u2014 {desc}")
         lines.append("\nOr just tell me what you need in plain English!")
         await post_message("\n".join(lines), channel, thread_ts)
+        return True
+
+    if cmd == "memory":
+        stats = memory.stats()
+        history = memory.get_history(channel)
+        lines = [f":brain: *Conversation Memory*\n"]
+        lines.append(f"This channel: *{len(history)}* / {MEMORY_SIZE} messages")
+        if stats:
+            total = sum(stats.values())
+            lines.append(f"All channels: *{total}* messages across *{len(stats)}* channels")
+        else:
+            lines.append("No conversations stored yet.")
+        await post_message("\n".join(lines), channel, thread_ts)
+        return True
+
+    if cmd == "forget":
+        if args.strip() == "all":
+            memory.clear_all()
+            await post_message(":wastebasket: All conversation memory cleared.", channel, thread_ts)
+        else:
+            memory.clear(channel)
+            await post_message(":wastebasket: Memory cleared for this channel.", channel, thread_ts)
         return True
 
     if cmd == "status":
@@ -864,16 +1055,29 @@ async def handle_events(request: web.Request) -> web.Response:
         if BOT_USER_ID:
             text = text.replace(f"<@{BOT_USER_ID}>", "").strip()
 
-        if text:
-            channel = event["channel"]
-            thread_ts = event.get("thread_ts") or event.get("ts")
+        channel = event["channel"]
+        thread_ts = event.get("thread_ts") or event.get("ts")
+
+        # Check for image files attached to message
+        files = event.get("files", [])
+        image_files = [
+            f for f in files
+            if f.get("mimetype", "").startswith("image/")
+        ]
+
+        if image_files:
+            # User sent an image — use vision to analyze it
+            asyncio.create_task(
+                _process_image(image_files, text, channel, thread_ts)
+            )
+        elif text:
             asyncio.create_task(_process_message(text, channel, thread_ts))
 
     return web.Response(status=200, text="ok")
 
 
 async def _process_message(text: str, channel: str, thread_ts: Optional[str]):
-    """Process a message — route to commands or AI."""
+    """Process a message — route to commands or AI, with conversation memory."""
     try:
         log.info(f"Processing: {text[:80]}...")
 
@@ -885,8 +1089,11 @@ async def _process_message(text: str, channel: str, thread_ts: Optional[str]):
             if await handle_slash_command(cmd, args, channel, thread_ts):
                 return
 
-        # Send to AI
-        response = await query_ai(text)
+        # Store user message in memory
+        memory.add(channel, "user", text)
+
+        # Send to AI with conversation history
+        response = await query_ai(text, channel=channel)
 
         # Check if AI wants to execute commands
         commands = parse_execute_blocks(response)
@@ -908,33 +1115,46 @@ async def _process_message(text: str, channel: str, thread_ts: Optional[str]):
                 )
             tasks = await task_manager.execute_group(group_id, channel, thread_ts)
 
-            # Collect results and send to AI for summary
-            result_text = ""
-            for t in tasks:
-                result_text += f"\n--- {t.tool}@{t.host}: {t.cmd} ---\n"
-                if t.status == TaskStatus.COMPLETED:
-                    result_text += t.result or "(no output)"
-                else:
-                    result_text += f"FAILED: {t.error}"
-                result_text += "\n"
+            # Handle results — check for images vs text
+            image_tasks = [t for t in tasks if t.result and t.result.startswith("IMAGE_URL:")]
+            text_tasks = [t for t in tasks if t not in image_tasks]
 
-            # Get AI summary of results
-            summary_prompt = (
-                f"You ran these commands for Sean. Here are the results. "
-                f"Give a concise, friendly summary. Use Slack formatting.\n\n"
-                f"Original request: {text}\n\nResults:{result_text}"
-            )
-            summary = await query_ai(summary_prompt)
+            # Post generated images directly
+            for t in image_tasks:
+                img_url = t.result.replace("IMAGE_URL:", "").strip()
+                await post_image(img_url, t.cmd[:100], channel, thread_ts, title=t.cmd[:100])
+                memory.add(channel, "assistant", f"[Generated image: {t.cmd[:80]}]")
 
-            # Remove any execute blocks from summary
-            summary = extract_chat_text(summary)
-            if summary:
-                await post_message(summary, channel, thread_ts)
+            # Summarize text results if any
+            if text_tasks:
+                result_text = ""
+                for t in text_tasks:
+                    result_text += f"\n--- {t.tool}@{t.host}: {t.cmd} ---\n"
+                    if t.status == TaskStatus.COMPLETED:
+                        result_text += t.result or "(no output)"
+                    else:
+                        result_text += f"FAILED: {t.error}"
+                    result_text += "\n"
+
+                summary_prompt = (
+                    f"You ran these commands for Sean. Here are the results. "
+                    f"Give a concise, friendly summary. Use Slack formatting.\n\n"
+                    f"Original request: {text}\n\nResults:{result_text}"
+                )
+                summary = await query_ai(summary_prompt, channel=channel)
+                summary = extract_chat_text(summary)
+                if summary:
+                    await post_message(summary, channel, thread_ts)
+                    memory.add(channel, "assistant", summary)
+            elif not image_tasks:
+                memory.add(channel, "assistant", f"[Executed {len(tasks)} tasks]")
         else:
             # Pure chat response
             if len(response) > 3900:
                 response = response[:3900] + "\n...(truncated)"
             await post_message(response, channel, thread_ts)
+            # Store assistant response in memory
+            memory.add(channel, "assistant", response)
 
     except Exception as e:
         log.error(f"Message processing failed: {e}", exc_info=True)
@@ -942,6 +1162,50 @@ async def _process_message(text: str, channel: str, thread_ts: Optional[str]):
             f":x: Bunny Alpha error: `{e}`",
             channel, thread_ts,
         )
+
+
+async def _process_image(files: List[Dict], text: str, channel: str, thread_ts: Optional[str]):
+    """Process an image shared in Slack using vision API."""
+    try:
+        for f in files[:3]:  # Max 3 images per message
+            file_url = f.get("url_private", "")
+            filename = f.get("name", "image")
+            log.info(f"Processing image: {filename}")
+
+            if not file_url:
+                await post_message(":warning: Couldn't access image file.", channel, thread_ts)
+                continue
+
+            # Try direct URL with Slack token for vision API
+            # Download the image data first
+            image_data = await download_slack_file(file_url)
+            if not image_data:
+                await post_message(f":warning: Couldn't download `{filename}`.", channel, thread_ts)
+                continue
+
+            # For vision, we need a publicly accessible URL or base64
+            # Use base64 data URL
+            import base64
+            mimetype = f.get("mimetype", "image/png")
+            b64 = base64.b64encode(image_data).decode("utf-8")
+            data_url = f"data:{mimetype};base64,{b64}"
+
+            prompt = text if text else "Describe this image in detail. What do you see?"
+            memory.add(channel, "user", f"[Shared image: {filename}] {prompt}")
+
+            description = await describe_image_with_vision(data_url, prompt)
+            if description:
+                await post_message(description, channel, thread_ts)
+                memory.add(channel, "assistant", description)
+            else:
+                await post_message(
+                    ":eyes: I can see you shared an image, but my vision API isn't available right now. "
+                    "Try again in a moment!",
+                    channel, thread_ts,
+                )
+    except Exception as e:
+        log.error(f"Image processing failed: {e}", exc_info=True)
+        await post_message(f":x: Image processing error: `{e}`", channel, thread_ts)
 
 
 # ---------------------------------------------------------------------------
