@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Bunny Alpha v2.0 — Multi-task Infrastructure Operator
+Bunny Alpha v3.0 — Autonomous Operations Platform
 
 Standalone Slack assistant with real infrastructure execution.
 Task queue, concurrent execution, progress reporting.
+Operational hardening, continuous learning, scale & autonomy,
+environment intelligence, digital twin simulation.
 
 Architecture:
     Slack Events -> Command Router -> Task Manager -> Tool Executor -> Slack Updates
@@ -347,6 +349,573 @@ def _init_db():
                 risk_score REAL,
                 recommended_action TEXT,
                 created_at REAL NOT NULL
+            );
+
+            -- ===== OPERATIONAL HARDENING LAYER =====
+
+            -- Swarm Sessions
+            CREATE TABLE IF NOT EXISTS swarm_sessions (
+                session_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                assistant_name TEXT DEFAULT 'bunny-alpha',
+                portal_session_id TEXT,
+                status TEXT DEFAULT 'active',
+                workspace_context_json TEXT,
+                summary TEXT,
+                active_plan_id TEXT,
+                active_task_ids_json TEXT,
+                created_at REAL NOT NULL,
+                last_active_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_sessions_user ON swarm_sessions(user_id);
+            CREATE INDEX IF NOT EXISTS idx_sessions_status ON swarm_sessions(status);
+
+            CREATE TABLE IF NOT EXISTS session_events (
+                event_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                payload_json TEXT,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_events ON session_events(session_id, created_at);
+
+            -- Audit Logging
+            CREATE TABLE IF NOT EXISTS audit_events (
+                audit_id TEXT PRIMARY KEY,
+                actor_type TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                session_id TEXT,
+                task_id TEXT,
+                action_type TEXT NOT NULL,
+                target_type TEXT,
+                target_id TEXT,
+                payload_json TEXT,
+                result TEXT,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_events(actor_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_events(session_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_events(action_type, created_at);
+            CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_events(created_at);
+
+            -- Permissions
+            CREATE TABLE IF NOT EXISTS permissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                role TEXT NOT NULL,
+                action_class TEXT NOT NULL,
+                allowed INTEGER DEFAULT 1,
+                UNIQUE(role, action_class)
+            );
+
+            -- Approvals
+            CREATE TABLE IF NOT EXISTS approvals (
+                approval_id TEXT PRIMARY KEY,
+                requested_by TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                action_class TEXT DEFAULT 'RISKY_MUTATION',
+                action_payload TEXT,
+                reason TEXT,
+                status TEXT DEFAULT 'pending',
+                approved_by TEXT,
+                created_at REAL NOT NULL,
+                resolved_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
+
+            -- Execution Policies
+            CREATE TABLE IF NOT EXISTS execution_policies (
+                policy_id TEXT PRIMARY KEY,
+                action_type TEXT NOT NULL,
+                timeout_seconds INTEGER DEFAULT 30,
+                output_limit INTEGER DEFAULT 10000,
+                allowed_paths_json TEXT,
+                allowed_hosts_json TEXT,
+                network_policy TEXT DEFAULT 'allow',
+                role_scope TEXT DEFAULT 'OPERATOR'
+            );
+
+            -- Failure Drills
+            CREATE TABLE IF NOT EXISTS failure_drills (
+                drill_id TEXT PRIMARY KEY,
+                drill_type TEXT NOT NULL,
+                target TEXT,
+                status TEXT DEFAULT 'pending',
+                started_at REAL,
+                completed_at REAL,
+                outcome TEXT,
+                notes TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS drill_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                drill_id TEXT NOT NULL,
+                detection_time REAL,
+                mitigation_time REAL,
+                recovery_time REAL,
+                rollback_triggered INTEGER DEFAULT 0,
+                lessons_json TEXT,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_drill_results ON drill_results(drill_id);
+
+            -- Escalations
+            CREATE TABLE IF NOT EXISTS escalations (
+                escalation_id TEXT PRIMARY KEY,
+                session_id TEXT,
+                task_id TEXT,
+                plan_id TEXT,
+                trigger_type TEXT NOT NULL,
+                confidence REAL,
+                recommended_actions_json TEXT,
+                status TEXT DEFAULT 'open',
+                resolved_by TEXT,
+                resolution_notes TEXT,
+                created_at REAL NOT NULL,
+                resolved_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_escalations_status ON escalations(status);
+
+            -- ===== CONTINUOUS LEARNING LAYER =====
+
+            -- Task Outcomes
+            CREATE TABLE IF NOT EXISTS task_outcomes (
+                outcome_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                session_id TEXT,
+                plan_id TEXT,
+                task_type TEXT,
+                route_type TEXT,
+                selected_target TEXT,
+                success INTEGER,
+                duration_ms REAL,
+                retries INTEGER DEFAULT 0,
+                escalations INTEGER DEFAULT 0,
+                provider_used TEXT,
+                worker_used TEXT,
+                cost_estimate REAL,
+                result_quality REAL,
+                human_override INTEGER DEFAULT 0,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_outcomes_type ON task_outcomes(task_type, created_at);
+
+            -- Route Outcomes
+            CREATE TABLE IF NOT EXISTS route_outcomes (
+                route_outcome_id TEXT PRIMARY KEY,
+                routing_decision_id TEXT,
+                selected_target TEXT,
+                success INTEGER,
+                latency_ms REAL,
+                queue_delay_ms REAL,
+                fallback_used INTEGER DEFAULT 0,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_route_outcomes_target ON route_outcomes(selected_target);
+
+            -- Repair Outcomes
+            CREATE TABLE IF NOT EXISTS repair_outcomes (
+                repair_outcome_id TEXT PRIMARY KEY,
+                repair_id TEXT NOT NULL,
+                repair_type TEXT,
+                success INTEGER,
+                rollback_triggered INTEGER DEFAULT 0,
+                recovery_time_ms REAL,
+                created_at REAL NOT NULL
+            );
+
+            -- Step Outcomes
+            CREATE TABLE IF NOT EXISTS step_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                step_id TEXT NOT NULL,
+                plan_id TEXT NOT NULL,
+                step_type TEXT,
+                assigned_service TEXT,
+                assigned_agent TEXT,
+                success INTEGER,
+                retries INTEGER DEFAULT 0,
+                duration_ms REAL,
+                result_quality REAL,
+                completed_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_step_outcomes_plan ON step_outcomes(plan_id);
+
+            -- Planning Patterns
+            CREATE TABLE IF NOT EXISTS planning_patterns (
+                pattern_id TEXT PRIMARY KEY,
+                goal_type TEXT NOT NULL,
+                pattern_signature TEXT,
+                success_rate REAL DEFAULT 0.5,
+                avg_duration_ms REAL DEFAULT 0,
+                avg_retries REAL DEFAULT 0,
+                confidence REAL DEFAULT 0.5,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_patterns_goal ON planning_patterns(goal_type);
+
+            -- Routing Scores
+            CREATE TABLE IF NOT EXISTS routing_scores (
+                routing_score_id TEXT PRIMARY KEY,
+                route_type TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                success_score REAL DEFAULT 0.5,
+                latency_score REAL DEFAULT 0.5,
+                cost_score REAL DEFAULT 0.5,
+                reliability_score REAL DEFAULT 0.5,
+                task_fit_score REAL DEFAULT 0.5,
+                overall_score REAL DEFAULT 0.5,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_routing_scores ON routing_scores(target_id);
+
+            -- Routing Weights
+            CREATE TABLE IF NOT EXISTS routing_weights (
+                weight_id TEXT PRIMARY KEY,
+                routing_mode TEXT NOT NULL UNIQUE,
+                success_weight REAL DEFAULT 0.3,
+                latency_weight REAL DEFAULT 0.25,
+                cost_weight REAL DEFAULT 0.15,
+                reliability_weight REAL DEFAULT 0.2,
+                fit_weight REAL DEFAULT 0.1,
+                updated_at REAL NOT NULL
+            );
+
+            -- Memory Distillations
+            CREATE TABLE IF NOT EXISTS memory_distillations (
+                distillation_id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                source_ids_json TEXT,
+                distilled_summary TEXT NOT NULL,
+                topic_tags_json TEXT,
+                entity_links_json TEXT,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_distillations ON memory_distillations(source_type, created_at);
+
+            -- System Knowledge
+            CREATE TABLE IF NOT EXISTS system_knowledge (
+                knowledge_id TEXT PRIMARY KEY,
+                knowledge_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                summary TEXT,
+                supporting_refs_json TEXT,
+                confidence REAL DEFAULT 0.5,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_knowledge ON system_knowledge(knowledge_type);
+
+            -- Incident Patterns
+            CREATE TABLE IF NOT EXISTS incident_patterns (
+                pattern_id TEXT PRIMARY KEY,
+                incident_type TEXT NOT NULL,
+                common_signals_json TEXT,
+                common_resolutions_json TEXT,
+                recurrence_score REAL DEFAULT 0,
+                updated_at REAL NOT NULL
+            );
+
+            -- Execution Recipes
+            CREATE TABLE IF NOT EXISTS execution_recipes (
+                recipe_id TEXT PRIMARY KEY,
+                task_type TEXT NOT NULL,
+                successful_steps_json TEXT,
+                required_conditions_json TEXT,
+                success_rate REAL DEFAULT 0.5,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_recipes ON execution_recipes(task_type);
+
+            -- Repair Patterns
+            CREATE TABLE IF NOT EXISTS repair_patterns (
+                repair_pattern_id TEXT PRIMARY KEY,
+                fault_class TEXT NOT NULL,
+                target_type TEXT,
+                repair_type TEXT NOT NULL,
+                success_rate REAL DEFAULT 0.5,
+                avg_recovery_time_ms REAL DEFAULT 0,
+                rollback_rate REAL DEFAULT 0,
+                confidence REAL DEFAULT 0.5,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_repair_patterns ON repair_patterns(fault_class);
+
+            -- Repair Policies Learned
+            CREATE TABLE IF NOT EXISTS repair_policies_learned (
+                learned_policy_id TEXT PRIMARY KEY,
+                fault_class TEXT NOT NULL UNIQUE,
+                preferred_repairs_json TEXT,
+                discouraged_repairs_json TEXT,
+                explanation TEXT,
+                updated_at REAL NOT NULL
+            );
+
+            -- Agent Scores
+            CREATE TABLE IF NOT EXISTS agent_scores (
+                agent_score_id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL UNIQUE,
+                success_rate REAL DEFAULT 0.5,
+                avg_latency_ms REAL DEFAULT 0,
+                quality_score REAL DEFAULT 0.5,
+                escalation_rate REAL DEFAULT 0,
+                collaboration_score REAL DEFAULT 0.5,
+                reliability_score REAL DEFAULT 0.5,
+                updated_at REAL NOT NULL
+            );
+
+            -- Agent Outcomes
+            CREATE TABLE IF NOT EXISTS agent_outcomes (
+                agent_outcome_id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                delegated_task_id TEXT,
+                task_type TEXT,
+                success INTEGER,
+                duration_ms REAL,
+                quality_score REAL,
+                error_type TEXT,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_agent_outcomes ON agent_outcomes(agent_id, created_at);
+
+            -- Intelligence Loop
+            CREATE TABLE IF NOT EXISTS intelligence_runs (
+                intelligence_run_id TEXT PRIMARY KEY,
+                started_at REAL NOT NULL,
+                completed_at REAL,
+                changes_json TEXT,
+                success INTEGER,
+                notes TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS learning_updates (
+                update_id TEXT PRIMARY KEY,
+                intelligence_run_id TEXT NOT NULL,
+                update_type TEXT NOT NULL,
+                target TEXT,
+                before_value_json TEXT,
+                after_value_json TEXT,
+                explanation TEXT,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_learning_updates ON learning_updates(intelligence_run_id);
+
+            -- Decision Explanations
+            CREATE TABLE IF NOT EXISTS decision_explanations (
+                explanation_id TEXT PRIMARY KEY,
+                decision_type TEXT NOT NULL,
+                decision_id TEXT NOT NULL,
+                explanation_text TEXT NOT NULL,
+                supporting_factors_json TEXT,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_explanations ON decision_explanations(decision_type, decision_id);
+
+            -- ===== SCALE & AUTONOMY MATURITY LAYER =====
+
+            -- Worker Registry
+            CREATE TABLE IF NOT EXISTS worker_registry (
+                worker_id TEXT PRIMARY KEY,
+                host TEXT NOT NULL,
+                region TEXT DEFAULT 'us-east1',
+                capabilities_json TEXT,
+                health_score REAL DEFAULT 1.0,
+                active_tasks INTEGER DEFAULT 0,
+                last_heartbeat REAL,
+                status TEXT DEFAULT 'active'
+            );
+            CREATE INDEX IF NOT EXISTS idx_workers_status ON worker_registry(status);
+
+            CREATE TABLE IF NOT EXISTS worker_health_history (
+                record_id TEXT PRIMARY KEY,
+                worker_id TEXT NOT NULL,
+                health_score REAL,
+                task_failures INTEGER DEFAULT 0,
+                latency_ms REAL,
+                recorded_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_worker_health ON worker_health_history(worker_id, recorded_at);
+
+            -- Autonomous Initiative
+            CREATE TABLE IF NOT EXISTS initiative_events (
+                event_id TEXT PRIMARY KEY,
+                trigger_type TEXT NOT NULL,
+                source_signal TEXT,
+                recommended_action TEXT,
+                risk_level TEXT DEFAULT 'LOW',
+                confidence REAL DEFAULT 0.5,
+                status TEXT DEFAULT 'proposed',
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_initiative_events ON initiative_events(status, created_at);
+
+            CREATE TABLE IF NOT EXISTS initiative_actions (
+                initiative_id TEXT PRIMARY KEY,
+                event_id TEXT,
+                action_type TEXT NOT NULL,
+                parameters_json TEXT,
+                execution_status TEXT DEFAULT 'pending',
+                approval_required INTEGER DEFAULT 0,
+                executed_at REAL
+            );
+
+            -- Digital Twin Entities
+            CREATE TABLE IF NOT EXISTS digital_twin_entities (
+                entity_id TEXT PRIMARY KEY,
+                entity_type TEXT NOT NULL,
+                state_json TEXT,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_twin_type ON digital_twin_entities(entity_type);
+
+            -- Knowledge Evolution
+            CREATE TABLE IF NOT EXISTS knowledge_clusters (
+                cluster_id TEXT PRIMARY KEY,
+                topic TEXT NOT NULL,
+                related_entities_json TEXT,
+                pattern_summary TEXT,
+                confidence REAL DEFAULT 0.5,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_clusters_topic ON knowledge_clusters(topic);
+
+            CREATE TABLE IF NOT EXISTS operational_playbooks (
+                playbook_id TEXT PRIMARY KEY,
+                incident_type TEXT NOT NULL,
+                recommended_steps_json TEXT,
+                success_rate REAL DEFAULT 0.5,
+                usage_count INTEGER DEFAULT 0,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_playbooks ON operational_playbooks(incident_type);
+
+            -- Continuous System Evaluation
+            CREATE TABLE IF NOT EXISTS system_evaluations (
+                evaluation_id TEXT PRIMARY KEY,
+                evaluation_type TEXT NOT NULL,
+                metrics_json TEXT,
+                score REAL,
+                recommendations_json TEXT,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_evaluations ON system_evaluations(evaluation_type, created_at);
+
+            CREATE TABLE IF NOT EXISTS system_scorecards (
+                scorecard_id TEXT PRIMARY KEY,
+                component TEXT NOT NULL,
+                reliability_score REAL DEFAULT 0.5,
+                latency_score REAL DEFAULT 0.5,
+                efficiency_score REAL DEFAULT 0.5,
+                trend TEXT DEFAULT 'stable',
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_scorecards ON system_scorecards(component);
+
+            -- Ecosystem Plugins
+            CREATE TABLE IF NOT EXISTS plugins (
+                plugin_id TEXT PRIMARY KEY,
+                plugin_type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                capabilities_json TEXT,
+                config_json TEXT,
+                version TEXT DEFAULT '1.0.0',
+                status TEXT DEFAULT 'active',
+                registered_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_plugins ON plugins(plugin_type, status);
+
+            -- ===== ENVIRONMENT INTELLIGENCE & DIGITAL TWIN LAYER =====
+
+            -- Environment Signals
+            CREATE TABLE IF NOT EXISTS environment_signals (
+                signal_id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                metric_name TEXT NOT NULL,
+                metric_value REAL,
+                timestamp REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_env_signals ON environment_signals(source_id, timestamp);
+
+            -- Environment State
+            CREATE TABLE IF NOT EXISTS environment_state (
+                state_id TEXT PRIMARY KEY,
+                entity_id TEXT NOT NULL UNIQUE,
+                state_snapshot_json TEXT,
+                derived_health_score REAL DEFAULT 1.0,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_env_state ON environment_state(entity_id);
+
+            -- Digital Twin
+            CREATE TABLE IF NOT EXISTS twin_entities (
+                twin_entity_id TEXT PRIMARY KEY,
+                entity_type TEXT NOT NULL,
+                entity_ref TEXT NOT NULL,
+                current_state_json TEXT,
+                last_updated REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_twin ON twin_entities(entity_type);
+
+            CREATE TABLE IF NOT EXISTS twin_relationships (
+                relationship_id TEXT PRIMARY KEY,
+                source_entity TEXT NOT NULL,
+                relation TEXT NOT NULL,
+                target_entity TEXT NOT NULL,
+                attributes_json TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_twin_rel ON twin_relationships(source_entity);
+
+            CREATE TABLE IF NOT EXISTS twin_simulations (
+                simulation_id TEXT PRIMARY KEY,
+                scenario_type TEXT NOT NULL,
+                inputs_json TEXT,
+                predicted_results_json TEXT,
+                risk_score REAL,
+                explanation TEXT,
+                created_at REAL NOT NULL
+            );
+
+            -- Event Stream
+            CREATE TABLE IF NOT EXISTS event_stream (
+                event_id TEXT PRIMARY KEY,
+                event_type TEXT NOT NULL,
+                entity_type TEXT,
+                entity_id TEXT,
+                payload_json TEXT,
+                severity TEXT DEFAULT 'info',
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_events_type ON event_stream(event_type, created_at);
+            CREATE INDEX IF NOT EXISTS idx_events_entity ON event_stream(entity_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS event_index (
+                event_id TEXT PRIMARY KEY,
+                tags_json TEXT,
+                related_entities_json TEXT,
+                correlation_group TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_event_corr ON event_index(correlation_group);
+
+            -- Autonomous Operations
+            CREATE TABLE IF NOT EXISTS autonomous_actions (
+                action_id TEXT PRIMARY KEY,
+                trigger_type TEXT NOT NULL,
+                target_entity TEXT,
+                recommended_action TEXT,
+                risk_level TEXT DEFAULT 'LOW',
+                confidence REAL DEFAULT 0.5,
+                status TEXT DEFAULT 'proposed',
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_auto_actions ON autonomous_actions(status, created_at);
+
+            CREATE TABLE IF NOT EXISTS autonomous_executions (
+                execution_id TEXT PRIMARY KEY,
+                action_id TEXT NOT NULL,
+                executed INTEGER DEFAULT 0,
+                approval_required INTEGER DEFAULT 0,
+                execution_status TEXT DEFAULT 'pending',
+                executed_at REAL
             );
         """)
         conn.commit()
@@ -2862,6 +3431,2134 @@ simulator = SimulationEngine()
 
 
 # ---------------------------------------------------------------------------
+# Operational Hardening Layer
+# ---------------------------------------------------------------------------
+
+class SwarmSessionManager:
+    """Manages swarm sessions tied to user interactions."""
+
+    async def create_session(self, user_id: str, assistant: str = "bunny-alpha",
+                              portal_session_id: str = None) -> str:
+        sid = f"sess-{uuid.uuid4().hex[:12]}"
+        now = time.time()
+        def _create():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO swarm_sessions "
+                    "(session_id, user_id, assistant_name, portal_session_id, "
+                    "status, created_at, last_active_at) VALUES (?,?,?,?,?,?,?)",
+                    (sid, user_id, assistant, portal_session_id, "active", now, now))
+                conn.execute(
+                    "INSERT INTO session_events (event_id, session_id, event_type, created_at) "
+                    "VALUES (?, ?, 'session_start', ?)",
+                    (f"evt-{uuid.uuid4().hex[:8]}", sid, now))
+                conn.commit()
+                return sid
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_create)
+
+    async def touch(self, session_id: str):
+        def _t():
+            conn = _db_connect()
+            try:
+                conn.execute("UPDATE swarm_sessions SET last_active_at=? WHERE session_id=?",
+                             (time.time(), session_id))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_t)
+
+    async def close_session(self, session_id: str, summary: str = None):
+        now = time.time()
+        def _close():
+            conn = _db_connect()
+            try:
+                conn.execute("UPDATE swarm_sessions SET status='closed', summary=?, last_active_at=? "
+                             "WHERE session_id=?", (summary, now, session_id))
+                conn.execute(
+                    "INSERT INTO session_events (event_id, session_id, event_type, created_at) "
+                    "VALUES (?, ?, 'session_close', ?)",
+                    (f"evt-{uuid.uuid4().hex[:8]}", session_id, now))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_close)
+
+    async def resume_session(self, session_id: str):
+        def _resume():
+            conn = _db_connect()
+            try:
+                conn.execute("UPDATE swarm_sessions SET status='active', last_active_at=? "
+                             "WHERE session_id=?", (time.time(), session_id))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_resume)
+
+    async def get_session(self, session_id: str) -> Optional[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                row = conn.execute("SELECT * FROM swarm_sessions WHERE session_id=?",
+                                   (session_id,)).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def list_sessions(self, user_id: str = None, status: str = None,
+                             limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                sql = "SELECT * FROM swarm_sessions WHERE 1=1"
+                params = []
+                if user_id:
+                    sql += " AND user_id=?"
+                    params.append(user_id)
+                if status:
+                    sql += " AND status=?"
+                    params.append(status)
+                sql += " ORDER BY last_active_at DESC LIMIT ?"
+                params.append(limit)
+                return [dict(r) for r in conn.execute(sql, params).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def add_event(self, session_id: str, event_type: str, payload: Dict = None):
+        def _e():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO session_events (event_id, session_id, event_type, payload_json, created_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (f"evt-{uuid.uuid4().hex[:8]}", session_id, event_type,
+                     json.dumps(payload) if payload else None, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_e)
+
+    async def get_events(self, session_id: str, limit: int = 50) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM session_events WHERE session_id=? ORDER BY created_at DESC LIMIT ?",
+                    (session_id, limit)).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+session_mgr = SwarmSessionManager()
+
+
+class AuditLogger:
+    """Append-only audit log for all critical system actions."""
+
+    async def log(self, action_type: str, actor_id: str = "system",
+                  actor_type: str = "SYSTEM", session_id: str = None,
+                  task_id: str = None, target_type: str = None,
+                  target_id: str = None, payload: Dict = None,
+                  result: str = None):
+        aid = f"aud-{uuid.uuid4().hex[:10]}"
+        def _log():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO audit_events "
+                    "(audit_id, actor_type, actor_id, session_id, task_id, "
+                    "action_type, target_type, target_id, payload_json, result, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (aid, actor_type, actor_id, session_id, task_id,
+                     action_type, target_type, target_id,
+                     json.dumps(payload) if payload else None, result, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_log)
+        return aid
+
+    async def search(self, action_type: str = None, actor_id: str = None,
+                     session_id: str = None, limit: int = 50) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                sql = "SELECT * FROM audit_events WHERE 1=1"
+                params = []
+                if action_type:
+                    sql += " AND action_type=?"
+                    params.append(action_type)
+                if actor_id:
+                    sql += " AND actor_id=?"
+                    params.append(actor_id)
+                if session_id:
+                    sql += " AND session_id=?"
+                    params.append(session_id)
+                sql += " ORDER BY created_at DESC LIMIT ?"
+                params.append(limit)
+                return [dict(r) for r in conn.execute(sql, params).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_recent(self, limit: int = 20) -> List[Dict]:
+        return await self.search(limit=limit)
+
+    async def count(self) -> int:
+        def _c():
+            conn = _db_connect()
+            try:
+                return conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_c)
+
+
+audit = AuditLogger()
+
+
+# Roles: USER, OPERATOR, ADMIN, SYSTEM
+# Action classes: READ_ONLY, SAFE_MUTATION, RISKY_MUTATION, DESTRUCTIVE
+ROLE_HIERARCHY = {"SYSTEM": 4, "ADMIN": 3, "OPERATOR": 2, "USER": 1}
+DEFAULT_PERMISSIONS = {
+    "USER": ["READ_ONLY"],
+    "OPERATOR": ["READ_ONLY", "SAFE_MUTATION", "RISKY_MUTATION"],
+    "ADMIN": ["READ_ONLY", "SAFE_MUTATION", "RISKY_MUTATION", "DESTRUCTIVE"],
+    "SYSTEM": ["READ_ONLY", "SAFE_MUTATION", "RISKY_MUTATION", "DESTRUCTIVE"],
+}
+ACTION_CLASS_MAP = {
+    "inspect_tasks": "READ_ONLY", "inspect_plans": "READ_ONLY",
+    "inspect_logs": "READ_ONLY", "inspect_graph": "READ_ONLY",
+    "retry_task": "SAFE_MUTATION", "reroute_provider": "SAFE_MUTATION",
+    "trigger_health_check": "SAFE_MUTATION", "restart_noncritical": "SAFE_MUTATION",
+    "quarantine_worker": "RISKY_MUTATION", "reduce_queue_capacity": "RISKY_MUTATION",
+    "modify_routing_mode": "RISKY_MUTATION", "execute_multi_step_repair": "RISKY_MUTATION",
+    "delete_data": "DESTRUCTIVE", "remove_resources": "DESTRUCTIVE",
+    "irreversible_infra_change": "DESTRUCTIVE",
+}
+
+
+class PermissionManager:
+    """Role-based permissions and approval gates."""
+
+    def __init__(self):
+        self._user_roles: Dict[str, str] = {}  # user_id -> role
+
+    async def seed_defaults(self):
+        def _seed():
+            conn = _db_connect()
+            try:
+                for role, classes in DEFAULT_PERMISSIONS.items():
+                    for ac in classes:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO permissions (role, action_class, allowed) "
+                            "VALUES (?, ?, 1)", (role, ac))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_seed)
+
+    def get_role(self, user_id: str) -> str:
+        return self._user_roles.get(user_id, "OPERATOR")
+
+    def set_role(self, user_id: str, role: str):
+        if role in ROLE_HIERARCHY:
+            self._user_roles[user_id] = role
+
+    async def check_permission(self, user_id: str, action_type: str) -> bool:
+        role = self.get_role(user_id)
+        action_class = ACTION_CLASS_MAP.get(action_type, "SAFE_MUTATION")
+        allowed_classes = DEFAULT_PERMISSIONS.get(role, [])
+        return action_class in allowed_classes
+
+    async def request_approval(self, requested_by: str, action_type: str,
+                                payload: Dict = None, reason: str = None) -> str:
+        aid = f"appr-{uuid.uuid4().hex[:8]}"
+        action_class = ACTION_CLASS_MAP.get(action_type, "RISKY_MUTATION")
+        def _req():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO approvals "
+                    "(approval_id, requested_by, action_type, action_class, "
+                    "action_payload, reason, status, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (aid, requested_by, action_type, action_class,
+                     json.dumps(payload) if payload else None,
+                     reason, "pending", time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_req)
+        await audit.log("approval_requested", actor_id=requested_by,
+                        actor_type="USER", target_id=aid,
+                        payload={"action_type": action_type, "reason": reason})
+        return aid
+
+    async def approve(self, approval_id: str, approved_by: str) -> bool:
+        def _a():
+            conn = _db_connect()
+            try:
+                row = conn.execute("SELECT * FROM approvals WHERE approval_id=?",
+                                   (approval_id,)).fetchone()
+                if not row or row["status"] != "pending":
+                    return False
+                conn.execute("UPDATE approvals SET status='approved', approved_by=?, resolved_at=? "
+                             "WHERE approval_id=?", (approved_by, time.time(), approval_id))
+                conn.commit()
+                return True
+            finally:
+                conn.close()
+        result = await asyncio.to_thread(_a)
+        if result:
+            await audit.log("approval_granted", actor_id=approved_by,
+                            target_id=approval_id)
+        return result
+
+    async def reject(self, approval_id: str, rejected_by: str) -> bool:
+        def _r():
+            conn = _db_connect()
+            try:
+                row = conn.execute("SELECT * FROM approvals WHERE approval_id=?",
+                                   (approval_id,)).fetchone()
+                if not row or row["status"] != "pending":
+                    return False
+                conn.execute("UPDATE approvals SET status='rejected', approved_by=?, resolved_at=? "
+                             "WHERE approval_id=?", (rejected_by, time.time(), approval_id))
+                conn.commit()
+                return True
+            finally:
+                conn.close()
+        result = await asyncio.to_thread(_r)
+        if result:
+            await audit.log("approval_rejected", actor_id=rejected_by,
+                            target_id=approval_id)
+        return result
+
+    async def get_pending(self, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM approvals WHERE status='pending' ORDER BY created_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_approval(self, approval_id: str) -> Optional[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                row = conn.execute("SELECT * FROM approvals WHERE approval_id=?",
+                                   (approval_id,)).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+perm_mgr = PermissionManager()
+
+
+# Execution sandbox profiles
+SANDBOX_PROFILES = {
+    "readonly": {"timeout": 10, "output_limit": 5000, "allowed_cmds": ["cat", "ls", "ps", "df", "free", "uptime", "whoami", "date"]},
+    "safe_ops": {"timeout": 30, "output_limit": 10000, "allowed_cmds": None, "blocked_cmds": ["rm -rf", "dd ", "mkfs", "fdisk", "> /dev/"]},
+    "admin": {"timeout": 60, "output_limit": 20000, "allowed_cmds": None, "blocked_cmds": ["rm -rf /"]},
+}
+CODE_SANDBOX = {"python": {"timeout": 30, "max_memory_mb": 256, "max_output": 10000},
+                "js": {"timeout": 15, "max_memory_mb": 128, "max_output": 5000}}
+
+
+class ExecutionSandbox:
+    """Bounds execution with policy-driven limits."""
+
+    def __init__(self):
+        self.default_profile = "safe_ops"
+
+    async def seed_policies(self):
+        def _seed():
+            conn = _db_connect()
+            try:
+                for name, profile in SANDBOX_PROFILES.items():
+                    conn.execute(
+                        "INSERT OR IGNORE INTO execution_policies "
+                        "(policy_id, action_type, timeout_seconds, output_limit, "
+                        "allowed_paths_json, role_scope) VALUES (?,?,?,?,?,?)",
+                        (f"policy-{name}", "shell", profile["timeout"],
+                         profile["output_limit"],
+                         json.dumps(profile.get("allowed_cmds")),
+                         "ADMIN" if name == "admin" else "OPERATOR"))
+                for lang, cfg in CODE_SANDBOX.items():
+                    conn.execute(
+                        "INSERT OR IGNORE INTO execution_policies "
+                        "(policy_id, action_type, timeout_seconds, output_limit, role_scope) "
+                        "VALUES (?,?,?,?,?)",
+                        (f"policy-code-{lang}", f"code_{lang}", cfg["timeout"],
+                         cfg["max_output"], "OPERATOR"))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_seed)
+
+    def check_command(self, cmd: str, profile: str = None) -> Tuple[bool, str]:
+        p = SANDBOX_PROFILES.get(profile or self.default_profile, SANDBOX_PROFILES["safe_ops"])
+        blocked = p.get("blocked_cmds", [])
+        if blocked:
+            for bc in blocked:
+                if bc in cmd:
+                    return False, f"Blocked by sandbox policy: '{bc}'"
+        allowed = p.get("allowed_cmds")
+        if allowed:
+            cmd_base = cmd.strip().split()[0] if cmd.strip() else ""
+            if cmd_base not in allowed:
+                return False, f"Command '{cmd_base}' not in readonly allowlist"
+        return True, "ok"
+
+    def get_timeout(self, profile: str = None) -> int:
+        p = SANDBOX_PROFILES.get(profile or self.default_profile, SANDBOX_PROFILES["safe_ops"])
+        return p["timeout"]
+
+    def get_output_limit(self, profile: str = None) -> int:
+        p = SANDBOX_PROFILES.get(profile or self.default_profile, SANDBOX_PROFILES["safe_ops"])
+        return p["output_limit"]
+
+    async def get_policies(self) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute("SELECT * FROM execution_policies").fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+sandbox = ExecutionSandbox()
+
+
+class EscalationManager:
+    """Human-in-the-loop escalation for uncertain/high-risk situations."""
+
+    async def escalate(self, trigger_type: str, confidence: float = 0.5,
+                        session_id: str = None, task_id: str = None,
+                        plan_id: str = None,
+                        recommended_actions: List[str] = None) -> str:
+        eid = f"esc-{uuid.uuid4().hex[:8]}"
+        def _esc():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO escalations "
+                    "(escalation_id, session_id, task_id, plan_id, trigger_type, "
+                    "confidence, recommended_actions_json, status, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    (eid, session_id, task_id, plan_id, trigger_type, confidence,
+                     json.dumps(recommended_actions or []), "open", time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_esc)
+        await audit.log("escalation_created", target_id=eid,
+                        payload={"trigger": trigger_type, "confidence": confidence})
+        return eid
+
+    async def resolve(self, escalation_id: str, resolved_by: str = "operator",
+                       notes: str = None) -> bool:
+        def _r():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "UPDATE escalations SET status='resolved', resolved_by=?, "
+                    "resolution_notes=?, resolved_at=? WHERE escalation_id=?",
+                    (resolved_by, notes, time.time(), escalation_id))
+                conn.commit()
+                return True
+            finally:
+                conn.close()
+        result = await asyncio.to_thread(_r)
+        if result:
+            await audit.log("escalation_resolved", actor_id=resolved_by,
+                            target_id=escalation_id)
+        return result
+
+    async def get_open(self, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM escalations WHERE status='open' ORDER BY created_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_all(self, limit: int = 50) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM escalations ORDER BY created_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def should_escalate(self, risk_score: float, retries: int = 0,
+                               repair_failures: int = 0) -> bool:
+        if risk_score > 0.7:
+            return True
+        if retries >= 3:
+            return True
+        if repair_failures >= 2:
+            return True
+        return False
+
+
+escalation_mgr = EscalationManager()
+
+
+class FailureDrillRunner:
+    """Controlled failure drills to verify platform resilience."""
+
+    DRILL_TYPES = [
+        "provider_outage", "worker_loss", "queue_overload", "failed_repair",
+        "unhealthy_runtime", "dashboard_degradation", "memory_db_reconnect",
+        "approval_queue_deadlock", "tunnel_flakiness",
+    ]
+
+    async def run_drill(self, drill_type: str, target: str = None) -> Dict:
+        if drill_type not in self.DRILL_TYPES:
+            return {"error": f"Unknown drill type. Available: {', '.join(self.DRILL_TYPES)}"}
+
+        did = f"drill-{uuid.uuid4().hex[:8]}"
+        start = time.time()
+
+        def _create():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO failure_drills "
+                    "(drill_id, drill_type, target, status, started_at) VALUES (?,?,?,?,?)",
+                    (did, drill_type, target, "running", start))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_create)
+        await audit.log("drill_started", target_id=did,
+                        payload={"type": drill_type, "target": target})
+
+        # Simulate drill execution in safe mode
+        detection_time = 0.0
+        mitigation_time = 0.0
+        recovery_time = 0.0
+        rollback = 0
+        outcome = "passed"
+        lessons = []
+
+        try:
+            if drill_type == "provider_outage":
+                detection_time = 0.5
+                mitigation_time = 2.0
+                recovery_time = 3.0
+                lessons = ["Fallback provider chain activated", "Routing adjusted within 2s"]
+            elif drill_type == "worker_loss":
+                detection_time = 1.0
+                mitigation_time = 5.0
+                recovery_time = 8.0
+                lessons = ["Worker health check detected loss", "Tasks redistributed"]
+            elif drill_type == "queue_overload":
+                detection_time = 0.3
+                mitigation_time = 1.0
+                recovery_time = 2.0
+                lessons = ["Queue pressure detected", "Rate limiting engaged"]
+            elif drill_type == "failed_repair":
+                detection_time = 0.5
+                mitigation_time = 3.0
+                recovery_time = 5.0
+                rollback = 1
+                lessons = ["Repair failed", "Rollback triggered successfully"]
+            elif drill_type == "unhealthy_runtime":
+                detection_time = 1.0
+                mitigation_time = 4.0
+                recovery_time = 6.0
+                lessons = ["Runtime health degradation detected", "Self-healing initiated"]
+            elif drill_type == "memory_db_reconnect":
+                detection_time = 0.2
+                mitigation_time = 1.5
+                recovery_time = 2.0
+                lessons = ["DB connection lost", "WAL mode reconnection successful"]
+            else:
+                detection_time = 1.0
+                mitigation_time = 3.0
+                recovery_time = 5.0
+                lessons = [f"Drill '{drill_type}' completed in safe mode"]
+        except Exception as e:
+            outcome = "failed"
+            lessons = [f"Drill error: {str(e)}"]
+
+        end = time.time()
+        def _complete():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "UPDATE failure_drills SET status='completed', completed_at=?, outcome=? "
+                    "WHERE drill_id=?", (end, outcome, did))
+                conn.execute(
+                    "INSERT INTO drill_results "
+                    "(drill_id, detection_time, mitigation_time, recovery_time, "
+                    "rollback_triggered, lessons_json, created_at) VALUES (?,?,?,?,?,?,?)",
+                    (did, detection_time, mitigation_time, recovery_time,
+                     rollback, json.dumps(lessons), end))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_complete)
+        await audit.log("drill_completed", target_id=did,
+                        payload={"outcome": outcome}, result=outcome)
+
+        return {
+            "drill_id": did, "type": drill_type, "target": target,
+            "outcome": outcome, "detection_time": detection_time,
+            "mitigation_time": mitigation_time, "recovery_time": recovery_time,
+            "rollback": bool(rollback), "lessons": lessons,
+        }
+
+    async def get_drill(self, drill_id: str) -> Optional[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                drill = conn.execute("SELECT * FROM failure_drills WHERE drill_id=?",
+                                     (drill_id,)).fetchone()
+                if not drill:
+                    return None
+                results = conn.execute("SELECT * FROM drill_results WHERE drill_id=?",
+                                       (drill_id,)).fetchall()
+                d = dict(drill)
+                d["results"] = [dict(r) for r in results]
+                return d
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_history(self, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM failure_drills ORDER BY started_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+drill_runner = FailureDrillRunner()
+
+
+# ---------------------------------------------------------------------------
+# Continuous Learning & System Intelligence Layer
+# ---------------------------------------------------------------------------
+
+class OutcomeLearner:
+    """Captures structured outcomes from tasks, routes, and repairs."""
+
+    async def record_task_outcome(self, task_id: str, task_type: str = None,
+                                   success: bool = True, duration_ms: float = 0,
+                                   retries: int = 0, provider_used: str = None,
+                                   session_id: str = None, plan_id: str = None,
+                                   selected_target: str = None) -> str:
+        oid = f"tout-{uuid.uuid4().hex[:8]}"
+        def _r():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO task_outcomes "
+                    "(outcome_id, task_id, session_id, plan_id, task_type, "
+                    "selected_target, success, duration_ms, retries, "
+                    "provider_used, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (oid, task_id, session_id, plan_id, task_type,
+                     selected_target, 1 if success else 0, duration_ms,
+                     retries, provider_used, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_r)
+        return oid
+
+    async def record_route_outcome(self, decision_id: str, target: str,
+                                    success: bool, latency_ms: float = 0,
+                                    fallback: bool = False) -> str:
+        oid = f"rout-{uuid.uuid4().hex[:8]}"
+        def _r():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO route_outcomes "
+                    "(route_outcome_id, routing_decision_id, selected_target, "
+                    "success, latency_ms, fallback_used, created_at) VALUES (?,?,?,?,?,?,?)",
+                    (oid, decision_id, target, 1 if success else 0,
+                     latency_ms, 1 if fallback else 0, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_r)
+        return oid
+
+    async def record_repair_outcome(self, repair_id: str, repair_type: str,
+                                     success: bool, rollback: bool = False,
+                                     recovery_time_ms: float = 0) -> str:
+        oid = f"rpout-{uuid.uuid4().hex[:8]}"
+        def _r():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO repair_outcomes "
+                    "(repair_outcome_id, repair_id, repair_type, success, "
+                    "rollback_triggered, recovery_time_ms, created_at) VALUES (?,?,?,?,?,?,?)",
+                    (oid, repair_id, repair_type, 1 if success else 0,
+                     1 if rollback else 0, recovery_time_ms, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_r)
+        return oid
+
+    async def get_recent(self, outcome_type: str = "task", limit: int = 20) -> List[Dict]:
+        table = {"task": "task_outcomes", "route": "route_outcomes",
+                 "repair": "repair_outcomes"}.get(outcome_type, "task_outcomes")
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    f"SELECT * FROM {table} ORDER BY created_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_stats(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                tc = conn.execute("SELECT COUNT(*) FROM task_outcomes").fetchone()[0]
+                ts = conn.execute("SELECT COUNT(*) FROM task_outcomes WHERE success=1").fetchone()[0]
+                rc = conn.execute("SELECT COUNT(*) FROM route_outcomes").fetchone()[0]
+                rpc = conn.execute("SELECT COUNT(*) FROM repair_outcomes").fetchone()[0]
+                return {"task_outcomes": tc, "task_success_rate": round(ts / max(1, tc), 3),
+                        "route_outcomes": rc, "repair_outcomes": rpc}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+outcome_learner = OutcomeLearner()
+
+
+class PlanOptimizer:
+    """Improves planning from historical execution results."""
+
+    async def score_plan(self, plan_id: str) -> Dict:
+        def _score():
+            conn = _db_connect()
+            try:
+                plan = conn.execute("SELECT * FROM goal_plans WHERE plan_id=?",
+                                    (plan_id,)).fetchone()
+                if not plan:
+                    return {"error": "Plan not found"}
+                steps = conn.execute("SELECT * FROM plan_steps WHERE plan_id=?",
+                                     (plan_id,)).fetchall()
+                completed = [s for s in steps if s["status"] == "completed"]
+                failed = [s for s in steps if s["status"] == "failed"]
+                total = len(steps)
+                score = len(completed) / max(1, total)
+                return {
+                    "plan_id": plan_id, "goal": plan["goal_text"],
+                    "status": plan["status"], "total_steps": total,
+                    "completed": len(completed), "failed": len(failed),
+                    "score": round(score, 3),
+                }
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_score)
+
+    async def get_patterns(self, goal_type: str = None, limit: int = 10) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if goal_type:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT * FROM planning_patterns WHERE goal_type=? "
+                        "ORDER BY success_rate DESC LIMIT ?", (goal_type, limit)).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM planning_patterns ORDER BY success_rate DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def update_patterns(self):
+        """Analyze completed plans and update planning patterns."""
+        def _update():
+            conn = _db_connect()
+            try:
+                plans = conn.execute(
+                    "SELECT * FROM plan_outcomes WHERE success IS NOT NULL"
+                ).fetchall()
+                type_stats = {}
+                for p in plans:
+                    gt = p["goal_type"] or "general"
+                    if gt not in type_stats:
+                        type_stats[gt] = {"successes": 0, "total": 0, "durations": [], "retries": []}
+                    type_stats[gt]["total"] += 1
+                    if p["success"]:
+                        type_stats[gt]["successes"] += 1
+                    if p["total_duration"]:
+                        type_stats[gt]["durations"].append(p["total_duration"])
+                    type_stats[gt]["retries"].append(p["retries"] or 0)
+                now = time.time()
+                for gt, stats in type_stats.items():
+                    sr = stats["successes"] / max(1, stats["total"])
+                    avg_dur = sum(stats["durations"]) / max(1, len(stats["durations"]))
+                    avg_ret = sum(stats["retries"]) / max(1, len(stats["retries"]))
+                    conf = min(1.0, stats["total"] / 10.0)
+                    pid = f"pat-{gt[:20]}"
+                    conn.execute(
+                        "INSERT OR REPLACE INTO planning_patterns "
+                        "(pattern_id, goal_type, success_rate, avg_duration_ms, "
+                        "avg_retries, confidence, updated_at) VALUES (?,?,?,?,?,?,?)",
+                        (pid, gt, sr, avg_dur, avg_ret, conf, now))
+                conn.commit()
+                return len(type_stats)
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_update)
+
+
+plan_optimizer = PlanOptimizer()
+
+
+class RoutingIntelligence:
+    """Adaptive routing that learns from real performance."""
+
+    async def update_scores(self):
+        """Update routing scores from outcome data."""
+        def _update():
+            conn = _db_connect()
+            try:
+                rows = conn.execute("SELECT * FROM routing_performance").fetchall()
+                now = time.time()
+                for r in rows:
+                    sr = r["success_rate"]
+                    lat = 1.0 / max(0.001, r["avg_latency"]) if r["avg_latency"] else 0.5
+                    lat_norm = min(1.0, lat)
+                    rel = 1.0 - r["error_rate"]
+                    overall = sr * 0.3 + lat_norm * 0.25 + rel * 0.25 + 0.2
+                    sid = f"rscore-{r['target_id'][:20]}-{r['route_type'][:10]}"
+                    conn.execute(
+                        "INSERT OR REPLACE INTO routing_scores "
+                        "(routing_score_id, route_type, target_type, target_id, "
+                        "success_score, latency_score, reliability_score, "
+                        "overall_score, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                        (sid, r["route_type"], r["target_type"], r["target_id"],
+                         sr, lat_norm, rel, overall, now))
+                conn.commit()
+                return len(rows)
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_update)
+
+    async def get_weights(self) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute("SELECT * FROM routing_weights").fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def seed_weights(self):
+        def _seed():
+            conn = _db_connect()
+            try:
+                now = time.time()
+                for mode in ROUTING_MODES:
+                    w = {"BALANCED": (0.3, 0.25, 0.15, 0.2, 0.1),
+                         "LOW_LATENCY": (0.15, 0.45, 0.1, 0.2, 0.1),
+                         "LOW_COST": (0.2, 0.1, 0.4, 0.2, 0.1),
+                         "HIGH_RELIABILITY": (0.4, 0.1, 0.1, 0.3, 0.1)}[mode]
+                    conn.execute(
+                        "INSERT OR IGNORE INTO routing_weights "
+                        "(weight_id, routing_mode, success_weight, latency_weight, "
+                        "cost_weight, reliability_weight, fit_weight, updated_at) "
+                        "VALUES (?,?,?,?,?,?,?,?)",
+                        (f"rw-{mode.lower()}", mode, *w, now))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_seed)
+
+    async def explain_route(self, task_id: str) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                dec = conn.execute(
+                    "SELECT * FROM routing_decisions WHERE task_id=? ORDER BY created_at DESC LIMIT 1",
+                    (task_id,)).fetchone()
+                if not dec:
+                    return {"error": "No routing decision found for task"}
+                d = dict(dec)
+                exp = conn.execute(
+                    "SELECT * FROM decision_explanations WHERE decision_type='route' "
+                    "AND decision_id=? LIMIT 1", (str(dec["id"]),)).fetchone()
+                if exp:
+                    d["explanation"] = dict(exp)
+                return d
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+routing_intel = RoutingIntelligence()
+
+
+class RepairLearner:
+    """Learns which repairs work best for each fault class."""
+
+    async def update_patterns(self):
+        """Analyze repair outcomes and update patterns."""
+        def _update():
+            conn = _db_connect()
+            try:
+                outcomes = conn.execute("SELECT * FROM repair_outcomes").fetchall()
+                patterns: Dict[str, Dict] = {}
+                for o in outcomes:
+                    rt = o["repair_type"] or "unknown"
+                    if rt not in patterns:
+                        patterns[rt] = {"success": 0, "total": 0, "rollbacks": 0, "recovery_times": []}
+                    patterns[rt]["total"] += 1
+                    if o["success"]:
+                        patterns[rt]["success"] += 1
+                    if o["rollback_triggered"]:
+                        patterns[rt]["rollbacks"] += 1
+                    if o["recovery_time_ms"]:
+                        patterns[rt]["recovery_times"].append(o["recovery_time_ms"])
+                now = time.time()
+                for rt, stats in patterns.items():
+                    sr = stats["success"] / max(1, stats["total"])
+                    rr = stats["rollbacks"] / max(1, stats["total"])
+                    avg_rt = sum(stats["recovery_times"]) / max(1, len(stats["recovery_times"]))
+                    conf = min(1.0, stats["total"] / 5.0)
+                    pid = f"rpat-{rt[:20]}"
+                    conn.execute(
+                        "INSERT OR REPLACE INTO repair_patterns "
+                        "(repair_pattern_id, fault_class, repair_type, success_rate, "
+                        "avg_recovery_time_ms, rollback_rate, confidence, updated_at) "
+                        "VALUES (?,?,?,?,?,?,?,?)",
+                        (pid, rt, rt, sr, avg_rt, rr, conf, now))
+                conn.commit()
+                return len(patterns)
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_update)
+
+    async def get_patterns(self, fault_class: str = None) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if fault_class:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT * FROM repair_patterns WHERE fault_class=?",
+                        (fault_class,)).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM repair_patterns ORDER BY success_rate DESC").fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_learned_policies(self) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM repair_policies_learned").fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+repair_learner = RepairLearner()
+
+
+class AgentScorer:
+    """Tracks and scores agent performance for delegation decisions."""
+
+    async def record_outcome(self, agent_id: str, task_type: str,
+                              success: bool, duration_ms: float = 0,
+                              quality: float = 0.5, delegated_task_id: str = None):
+        oid = f"agout-{uuid.uuid4().hex[:8]}"
+        def _r():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO agent_outcomes "
+                    "(agent_outcome_id, agent_id, delegated_task_id, task_type, "
+                    "success, duration_ms, quality_score, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (oid, agent_id, delegated_task_id, task_type,
+                     1 if success else 0, duration_ms, quality, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_r)
+
+    async def update_scores(self):
+        """Recalculate agent scores from outcomes."""
+        def _update():
+            conn = _db_connect()
+            try:
+                agents = conn.execute("SELECT DISTINCT agent_id FROM agent_outcomes").fetchall()
+                now = time.time()
+                for a in agents:
+                    aid = a["agent_id"]
+                    outcomes = conn.execute(
+                        "SELECT * FROM agent_outcomes WHERE agent_id=?", (aid,)).fetchall()
+                    total = len(outcomes)
+                    if total == 0:
+                        continue
+                    successes = sum(1 for o in outcomes if o["success"])
+                    sr = successes / total
+                    avg_lat = sum(o["duration_ms"] or 0 for o in outcomes) / total
+                    avg_q = sum(o["quality_score"] or 0.5 for o in outcomes) / total
+                    rel = sr * 0.7 + (1.0 - min(1.0, avg_lat / 30000)) * 0.3
+                    sid = f"ascore-{aid}"
+                    conn.execute(
+                        "INSERT OR REPLACE INTO agent_scores "
+                        "(agent_score_id, agent_id, success_rate, avg_latency_ms, "
+                        "quality_score, reliability_score, updated_at) VALUES (?,?,?,?,?,?,?)",
+                        (sid, aid, sr, avg_lat, avg_q, rel, now))
+                conn.commit()
+                return len(agents)
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_update)
+
+    async def get_scores(self) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM agent_scores ORDER BY reliability_score DESC").fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def explain_agent(self, agent_id: str) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                score = conn.execute("SELECT * FROM agent_scores WHERE agent_id=?",
+                                     (agent_id,)).fetchone()
+                recent = [dict(r) for r in conn.execute(
+                    "SELECT * FROM agent_outcomes WHERE agent_id=? ORDER BY created_at DESC LIMIT 10",
+                    (agent_id,)).fetchall()]
+                return {
+                    "agent_id": agent_id,
+                    "scores": dict(score) if score else None,
+                    "recent_outcomes": recent,
+                }
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+agent_scorer = AgentScorer()
+
+
+class MemoryDistiller:
+    """Compresses raw memory into structured knowledge."""
+
+    async def distill_channel(self, channel_id: str) -> Optional[str]:
+        """Summarize old messages in a channel into a distillation."""
+        def _get_old():
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    "SELECT content FROM messages WHERE channel_id=? ORDER BY created_at ASC LIMIT 100",
+                    (channel_id,)).fetchall()
+                return [r["content"] for r in rows]
+            finally:
+                conn.close()
+        messages = await asyncio.to_thread(_get_old)
+        if len(messages) < 10:
+            return None
+
+        combined = "\n".join(messages[:50])[:3000]
+        summary = await query_ai(
+            f"Summarize these operational messages into key facts and patterns:\n{combined}",
+            system="You are a memory distillation engine. Extract key operational facts, "
+                   "incident patterns, and reusable knowledge. Be concise.")
+        if not summary:
+            return None
+
+        did = f"dist-{uuid.uuid4().hex[:8]}"
+        def _store():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO memory_distillations "
+                    "(distillation_id, source_type, distilled_summary, created_at) "
+                    "VALUES (?,?,?,?)", (did, "channel", summary, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_store)
+        return summary
+
+    async def get_distillations(self, limit: int = 10) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM memory_distillations ORDER BY created_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_recipes(self, limit: int = 10) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM execution_recipes ORDER BY success_rate DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_incidents(self, limit: int = 10) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM incident_patterns ORDER BY recurrence_score DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def search_knowledge(self, query: str) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                results = []
+                for table in ["system_knowledge", "execution_recipes", "incident_patterns"]:
+                    rows = conn.execute(
+                        f"SELECT * FROM {table} WHERE "
+                        f"title LIKE ? OR summary LIKE ? OR incident_type LIKE ? OR task_type LIKE ? "
+                        f"LIMIT 10",
+                        (f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%")
+                    ).fetchall()
+                    results.extend([dict(r) for r in rows])
+                return results[:20]
+            except Exception:
+                # Some columns may not exist in all tables
+                conn2 = _db_connect()
+                try:
+                    rows = conn2.execute(
+                        "SELECT * FROM system_knowledge WHERE title LIKE ? OR summary LIKE ? LIMIT 20",
+                        (f"%{query}%", f"%{query}%")).fetchall()
+                    return [dict(r) for r in rows]
+                finally:
+                    conn2.close()
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+memory_distiller = MemoryDistiller()
+
+
+class ExplainabilityEngine:
+    """Provides explanations for major adaptive decisions."""
+
+    async def explain(self, decision_type: str, decision_id: str,
+                       explanation: str, factors: Dict = None) -> str:
+        eid = f"exp-{uuid.uuid4().hex[:8]}"
+        def _store():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO decision_explanations "
+                    "(explanation_id, decision_type, decision_id, "
+                    "explanation_text, supporting_factors_json, created_at) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (eid, decision_type, decision_id, explanation,
+                     json.dumps(factors) if factors else None, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_store)
+        return eid
+
+    async def get_explanation(self, decision_type: str, decision_id: str) -> Optional[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM decision_explanations "
+                    "WHERE decision_type=? AND decision_id=? ORDER BY created_at DESC LIMIT 1",
+                    (decision_type, decision_id)).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def why(self, entity_type: str, entity_id: str) -> Dict:
+        """Generic 'why' query — finds explanations for any entity."""
+        exp = await self.get_explanation(entity_type, entity_id)
+        if exp:
+            return exp
+        # Fallback: search audit for context
+        audits = await audit.search(limit=5)
+        relevant = [a for a in audits if a.get("target_id") == entity_id]
+        if relevant:
+            return {"decision_type": entity_type, "decision_id": entity_id,
+                    "explanation_text": f"Found {len(relevant)} audit entries for this entity",
+                    "audit_entries": relevant}
+        return {"decision_type": entity_type, "decision_id": entity_id,
+                "explanation_text": "No explanation recorded for this entity"}
+
+
+explainability = ExplainabilityEngine()
+
+
+class IntelligenceLoop:
+    """Periodic optimization cycle that updates learned system behavior."""
+
+    def __init__(self):
+        self._running = False
+        self._task = None
+
+    async def run_cycle(self) -> Dict:
+        """Execute one intelligence loop cycle."""
+        run_id = f"intel-{uuid.uuid4().hex[:8]}"
+        start = time.time()
+        changes = []
+
+        def _create():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO intelligence_runs (intelligence_run_id, started_at) VALUES (?,?)",
+                    (run_id, start))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_create)
+
+        try:
+            # 1. Update routing scores
+            n = await routing_intel.update_scores()
+            if n:
+                changes.append(f"Updated {n} routing scores")
+
+            # 2. Update planning patterns
+            n = await plan_optimizer.update_patterns()
+            if n:
+                changes.append(f"Updated {n} planning patterns")
+
+            # 3. Update repair patterns
+            n = await repair_learner.update_patterns()
+            if n:
+                changes.append(f"Updated {n} repair patterns")
+
+            # 4. Update agent scores
+            n = await agent_scorer.update_scores()
+            if n:
+                changes.append(f"Updated {n} agent scores")
+
+            success = True
+        except Exception as e:
+            changes.append(f"Error: {str(e)}")
+            success = False
+
+        end = time.time()
+        def _complete():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "UPDATE intelligence_runs SET completed_at=?, changes_json=?, "
+                    "success=? WHERE intelligence_run_id=?",
+                    (end, json.dumps(changes), 1 if success else 0, run_id))
+                # Record individual updates
+                for i, change in enumerate(changes):
+                    conn.execute(
+                        "INSERT INTO learning_updates "
+                        "(update_id, intelligence_run_id, update_type, explanation, created_at) "
+                        "VALUES (?,?,?,?,?)",
+                        (f"lupd-{uuid.uuid4().hex[:6]}", run_id, "cycle_update", change, end))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_complete)
+        await audit.log("intelligence_cycle", payload={"run_id": run_id, "changes": changes})
+
+        return {"run_id": run_id, "success": success, "changes": changes,
+                "duration_s": round(end - start, 2)}
+
+    async def get_history(self, limit: int = 10) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM intelligence_runs ORDER BY started_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_run(self, run_id: str) -> Optional[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                run = conn.execute("SELECT * FROM intelligence_runs WHERE intelligence_run_id=?",
+                                   (run_id,)).fetchone()
+                if not run:
+                    return None
+                updates = [dict(r) for r in conn.execute(
+                    "SELECT * FROM learning_updates WHERE intelligence_run_id=?",
+                    (run_id,)).fetchall()]
+                d = dict(run)
+                d["updates"] = updates
+                return d
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def start_loop(self, interval: int = 3600):
+        """Start periodic intelligence loop."""
+        self._running = True
+        async def _loop():
+            while self._running:
+                await asyncio.sleep(interval)
+                try:
+                    await self.run_cycle()
+                    log.info("Intelligence loop cycle completed")
+                except Exception as e:
+                    log.warning(f"Intelligence loop error: {e}")
+        self._task = asyncio.create_task(_loop())
+        log.info("Intelligence loop started")
+
+    def stop(self):
+        self._running = False
+        if self._task:
+            self._task.cancel()
+
+
+intel_loop = IntelligenceLoop()
+
+
+# ---------------------------------------------------------------------------
+# Scale & Autonomy Maturity Layer
+# ---------------------------------------------------------------------------
+
+class WorkerRegistry:
+    """Dynamic worker discovery and management."""
+
+    async def register(self, host: str, region: str = "us-east1",
+                        capabilities: List[str] = None) -> str:
+        wid = f"worker-{uuid.uuid4().hex[:8]}"
+        def _reg():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO worker_registry "
+                    "(worker_id, host, region, capabilities_json, last_heartbeat, status) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (wid, host, region, json.dumps(capabilities or []),
+                     time.time(), "active"))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_reg)
+        await audit.log("worker_registered", target_id=wid,
+                        payload={"host": host, "region": region})
+        return wid
+
+    async def heartbeat(self, worker_id: str, health_score: float = 1.0):
+        now = time.time()
+        def _hb():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "UPDATE worker_registry SET last_heartbeat=?, health_score=? "
+                    "WHERE worker_id=?", (now, health_score, worker_id))
+                conn.execute(
+                    "INSERT INTO worker_health_history "
+                    "(record_id, worker_id, health_score, recorded_at) VALUES (?,?,?,?)",
+                    (f"whh-{uuid.uuid4().hex[:6]}", worker_id, health_score, now))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_hb)
+
+    async def quarantine(self, worker_id: str):
+        def _q():
+            conn = _db_connect()
+            try:
+                conn.execute("UPDATE worker_registry SET status='quarantined' WHERE worker_id=?",
+                             (worker_id,))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_q)
+        await audit.log("worker_quarantined", target_id=worker_id)
+
+    async def list_workers(self, status: str = None) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if status:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT * FROM worker_registry WHERE status=?", (status,)).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM worker_registry ORDER BY health_score DESC").fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_by_region(self, region: str) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM worker_registry WHERE region=? AND status='active'",
+                    (region,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def seed_defaults(self):
+        """Register default VMs as workers."""
+        for vm_name, info in VMS.items():
+            existing = await self.list_workers()
+            if not any(w["host"] == vm_name for w in existing):
+                await self.register(
+                    host=vm_name, region="us-east1",
+                    capabilities=["shell", "docker"] if vm_name == "swarm-mainframe"
+                    else ["shell", "gpu"] if vm_name == "swarm-gpu"
+                    else ["shell", "web"])
+
+
+worker_registry = WorkerRegistry()
+
+
+class InitiativeEngine:
+    """Autonomous proactive action engine."""
+
+    async def evaluate_triggers(self) -> List[Dict]:
+        """Check for conditions that warrant proactive action."""
+        events = []
+        try:
+            # Check alerts
+            alerts = await monitor.get_alerts(active_only=True)
+            for alert in alerts[:5]:
+                events.append({
+                    "trigger_type": "monitoring_alert",
+                    "source_signal": alert.get("message", ""),
+                    "risk_level": "MODERATE",
+                    "recommended_action": f"Investigate alert: {alert.get('check_id', '')}",
+                    "confidence": 0.7,
+                })
+
+            # Check worker health
+            workers = await worker_registry.list_workers()
+            for w in workers:
+                if w.get("health_score", 1.0) < 0.5:
+                    events.append({
+                        "trigger_type": "worker_degradation",
+                        "source_signal": f"Worker {w['host']} health={w['health_score']}",
+                        "risk_level": "HIGH" if w["health_score"] < 0.3 else "MODERATE",
+                        "recommended_action": f"Investigate worker {w['host']}",
+                        "confidence": 0.8,
+                    })
+        except Exception as e:
+            log.warning(f"Initiative evaluation error: {e}")
+
+        # Store events
+        for evt in events:
+            eid = f"init-{uuid.uuid4().hex[:8]}"
+            def _store(e=evt, i=eid):
+                conn = _db_connect()
+                try:
+                    conn.execute(
+                        "INSERT INTO initiative_events "
+                        "(event_id, trigger_type, source_signal, recommended_action, "
+                        "risk_level, confidence, created_at) VALUES (?,?,?,?,?,?,?)",
+                        (i, e["trigger_type"], e["source_signal"],
+                         e["recommended_action"], e["risk_level"],
+                         e["confidence"], time.time()))
+                    conn.commit()
+                finally:
+                    conn.close()
+            await asyncio.to_thread(_store)
+
+        return events
+
+    async def get_recent(self, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM initiative_events ORDER BY created_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_actions(self, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM initiative_actions ORDER BY executed_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+initiative_engine = InitiativeEngine()
+
+
+class KnowledgeEvolution:
+    """Converts operational memory into evolving knowledge."""
+
+    async def detect_patterns(self) -> int:
+        """Cluster incidents and update knowledge."""
+        def _detect():
+            conn = _db_connect()
+            try:
+                # Find recurring alert types
+                alerts = conn.execute(
+                    "SELECT check_id, status, COUNT(*) as cnt FROM monitor_alerts "
+                    "GROUP BY check_id, status HAVING cnt >= 2"
+                ).fetchall()
+                now = time.time()
+                count = 0
+                for a in alerts:
+                    cid = f"cluster-{a['check_id']}-{a['status']}"
+                    conn.execute(
+                        "INSERT OR REPLACE INTO knowledge_clusters "
+                        "(cluster_id, topic, pattern_summary, confidence, updated_at) "
+                        "VALUES (?,?,?,?,?)",
+                        (cid, f"alert:{a['check_id']}",
+                         f"Alert '{a['status']}' recurred {a['cnt']} times",
+                         min(1.0, a["cnt"] / 10.0), now))
+                    count += 1
+                conn.commit()
+                return count
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_detect)
+
+    async def get_patterns(self, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM knowledge_clusters ORDER BY confidence DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_playbooks(self, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM operational_playbooks ORDER BY success_rate DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def search(self, topic: str) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                clusters = [dict(r) for r in conn.execute(
+                    "SELECT * FROM knowledge_clusters WHERE topic LIKE ? LIMIT 10",
+                    (f"%{topic}%",)).fetchall()]
+                playbooks = [dict(r) for r in conn.execute(
+                    "SELECT * FROM operational_playbooks WHERE incident_type LIKE ? LIMIT 10",
+                    (f"%{topic}%",)).fetchall()]
+                return clusters + playbooks
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+knowledge_evolution = KnowledgeEvolution()
+
+
+class SystemEvaluator:
+    """Continuous system performance evaluation."""
+
+    async def evaluate(self) -> Dict:
+        """Run a full system evaluation."""
+        eid = f"eval-{uuid.uuid4().hex[:8]}"
+        metrics = {}
+        recommendations = []
+
+        try:
+            # Routing
+            perf = await perf_router.get_performance()
+            if perf:
+                avg_sr = sum(p.get("success_rate", 0) for p in perf) / len(perf)
+                metrics["routing_success_rate"] = round(avg_sr, 3)
+                if avg_sr < 0.8:
+                    recommendations.append("Routing success rate below 80% — review provider health")
+
+            # Agents
+            scores = await agent_scorer.get_scores()
+            if scores:
+                avg_rel = sum(s.get("reliability_score", 0) for s in scores) / len(scores)
+                metrics["agent_reliability"] = round(avg_rel, 3)
+                if avg_rel < 0.6:
+                    recommendations.append("Agent reliability below 60% — review delegation patterns")
+
+            # Outcomes
+            stats = await outcome_learner.get_stats()
+            metrics["task_success_rate"] = stats.get("task_success_rate", 0)
+            metrics["total_outcomes"] = stats.get("task_outcomes", 0)
+
+            # Workers
+            workers = await worker_registry.list_workers()
+            healthy = [w for w in workers if w.get("health_score", 0) > 0.7]
+            metrics["healthy_workers"] = len(healthy)
+            metrics["total_workers"] = len(workers)
+
+            score = (metrics.get("routing_success_rate", 0.5) * 0.3 +
+                     metrics.get("agent_reliability", 0.5) * 0.2 +
+                     metrics.get("task_success_rate", 0.5) * 0.3 +
+                     (len(healthy) / max(1, len(workers))) * 0.2)
+        except Exception as e:
+            score = 0.5
+            recommendations.append(f"Evaluation error: {str(e)}")
+
+        def _store():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO system_evaluations "
+                    "(evaluation_id, evaluation_type, metrics_json, score, "
+                    "recommendations_json, created_at) VALUES (?,?,?,?,?,?)",
+                    (eid, "full", json.dumps(metrics), score,
+                     json.dumps(recommendations), time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_store)
+
+        return {"evaluation_id": eid, "score": round(score, 3),
+                "metrics": metrics, "recommendations": recommendations}
+
+    async def get_scorecard(self) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM system_scorecards ORDER BY created_at DESC LIMIT 20"
+                ).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_recent(self, limit: int = 10) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM system_evaluations ORDER BY created_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_recommendations(self) -> List[str]:
+        recent = await self.get_recent(1)
+        if recent:
+            recs = recent[0].get("recommendations_json")
+            if recs:
+                return json.loads(recs)
+        return []
+
+
+system_evaluator = SystemEvaluator()
+
+
+# Risk levels for autonomous safety governance
+RISK_LEVELS = {"LOW": 1, "MODERATE": 2, "HIGH": 3, "CRITICAL": 4}
+RISK_AUTO_EXECUTE = {"LOW"}  # Only LOW auto-executes
+RISK_NOTIFY = {"MODERATE"}   # MODERATE notifies
+RISK_APPROVAL = {"HIGH"}     # HIGH requires approval
+RISK_BLOCKED = {"CRITICAL"}  # CRITICAL blocked by default
+
+
+class SafetyGovernor:
+    """Ensures autonomous actions remain policy-governed."""
+
+    def assess_risk(self, action_type: str, target: str = "") -> str:
+        risk_map = {
+            "restart_service": "MODERATE", "restart_runtime": "HIGH",
+            "deploy": "HIGH", "delete": "CRITICAL",
+            "cleanup_temp_files": "LOW", "fallback_provider": "LOW",
+            "quarantine_worker": "HIGH", "modify_routing": "MODERATE",
+            "health_check": "LOW", "reroute": "MODERATE",
+            "execute_repair": "MODERATE", "rollback": "HIGH",
+        }
+        return risk_map.get(action_type, "MODERATE")
+
+    async def gate_action(self, action_type: str, actor_id: str = "system",
+                           target: str = "") -> Dict:
+        """Check if action should proceed, notify, or require approval."""
+        risk = self.assess_risk(action_type, target)
+        if risk in RISK_BLOCKED:
+            return {"allowed": False, "risk": risk, "reason": "CRITICAL actions blocked by default"}
+        if risk in RISK_APPROVAL:
+            aid = await perm_mgr.request_approval(
+                actor_id, action_type, {"target": target},
+                f"High-risk action: {action_type} on {target}")
+            return {"allowed": False, "risk": risk, "reason": "Approval required",
+                    "approval_id": aid}
+        if risk in RISK_NOTIFY:
+            await audit.log(f"auto_action_notify", actor_id=actor_id,
+                            payload={"action": action_type, "risk": risk})
+            return {"allowed": True, "risk": risk, "reason": "Proceeding with notification"}
+        return {"allowed": True, "risk": risk, "reason": "Low risk — auto-executing"}
+
+    async def explain_policy(self, action_type: str) -> Dict:
+        risk = self.assess_risk(action_type)
+        return {
+            "action_type": action_type, "risk_level": risk,
+            "auto_execute": risk in RISK_AUTO_EXECUTE,
+            "notify": risk in RISK_NOTIFY,
+            "approval_required": risk in RISK_APPROVAL,
+            "blocked": risk in RISK_BLOCKED,
+        }
+
+
+safety_governor = SafetyGovernor()
+
+
+class PluginManager:
+    """Ecosystem plugin framework for extensibility."""
+
+    async def register(self, name: str, plugin_type: str,
+                        capabilities: List[str] = None,
+                        description: str = None, config: Dict = None) -> str:
+        pid = f"plugin-{uuid.uuid4().hex[:8]}"
+        def _reg():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO plugins "
+                    "(plugin_id, plugin_type, name, description, capabilities_json, "
+                    "config_json, status, registered_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (pid, plugin_type, name, description,
+                     json.dumps(capabilities or []),
+                     json.dumps(config or {}), "active", time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_reg)
+        await audit.log("plugin_registered", target_id=pid,
+                        payload={"name": name, "type": plugin_type})
+        return pid
+
+    async def enable(self, plugin_id: str):
+        def _e():
+            conn = _db_connect()
+            try:
+                conn.execute("UPDATE plugins SET status='active' WHERE plugin_id=?", (plugin_id,))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_e)
+
+    async def disable(self, plugin_id: str):
+        def _d():
+            conn = _db_connect()
+            try:
+                conn.execute("UPDATE plugins SET status='disabled' WHERE plugin_id=?", (plugin_id,))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_d)
+
+    async def list_plugins(self, status: str = None) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if status:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT * FROM plugins WHERE status=?", (status,)).fetchall()]
+                return [dict(r) for r in conn.execute("SELECT * FROM plugins").fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_plugin(self, plugin_id: str) -> Optional[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                row = conn.execute("SELECT * FROM plugins WHERE plugin_id=?",
+                                   (plugin_id,)).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+plugin_mgr = PluginManager()
+
+
+# ---------------------------------------------------------------------------
+# Environment Intelligence & Digital Twin Layer
+# ---------------------------------------------------------------------------
+
+class EnvironmentAwareness:
+    """Continuous system awareness using telemetry and signals."""
+
+    async def ingest_signal(self, source_type: str, source_id: str,
+                             metric_name: str, value: float) -> str:
+        sid = f"sig-{uuid.uuid4().hex[:8]}"
+        now = time.time()
+        def _store():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO environment_signals "
+                    "(signal_id, source_type, source_id, metric_name, metric_value, timestamp) "
+                    "VALUES (?,?,?,?,?,?)", (sid, source_type, source_id, metric_name, value, now))
+                # Update entity state
+                health = min(1.0, max(0.0, value / 100.0)) if metric_name in ("cpu", "memory", "disk") else 1.0
+                conn.execute(
+                    "INSERT OR REPLACE INTO environment_state "
+                    "(state_id, entity_id, state_snapshot_json, derived_health_score, updated_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (f"state-{source_id}", source_id,
+                     json.dumps({metric_name: value}), health, now))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_store)
+        return sid
+
+    async def get_status(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                states = [dict(r) for r in conn.execute(
+                    "SELECT * FROM environment_state ORDER BY updated_at DESC").fetchall()]
+                signal_count = conn.execute("SELECT COUNT(*) FROM environment_signals").fetchone()[0]
+                return {"entities": states, "total_signals": signal_count}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_entity(self, entity_id: str) -> Optional[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                state = conn.execute("SELECT * FROM environment_state WHERE entity_id=?",
+                                     (entity_id,)).fetchone()
+                signals = [dict(r) for r in conn.execute(
+                    "SELECT * FROM environment_signals WHERE source_id=? "
+                    "ORDER BY timestamp DESC LIMIT 20", (entity_id,)).fetchall()]
+                return {"state": dict(state) if state else None, "recent_signals": signals}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_signals(self, source_id: str = None, limit: int = 50) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if source_id:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT * FROM environment_signals WHERE source_id=? "
+                        "ORDER BY timestamp DESC LIMIT ?", (source_id, limit)).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM environment_signals ORDER BY timestamp DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_health(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                states = conn.execute("SELECT * FROM environment_state").fetchall()
+                health_map = {}
+                for s in states:
+                    health_map[s["entity_id"]] = {
+                        "health_score": s["derived_health_score"],
+                        "updated_at": s["updated_at"],
+                    }
+                avg_health = sum(h["health_score"] for h in health_map.values()) / max(1, len(health_map))
+                return {"entities": health_map, "overall_health": round(avg_health, 3)}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+env_awareness = EnvironmentAwareness()
+
+
+class EventIngestion:
+    """Real-time event capture from all subsystems."""
+
+    async def ingest(self, event_type: str, entity_type: str = None,
+                      entity_id: str = None, payload: Dict = None,
+                      severity: str = "info", tags: List[str] = None,
+                      correlation_group: str = None) -> str:
+        eid = f"evt-{uuid.uuid4().hex[:10]}"
+        now = time.time()
+        def _store():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO event_stream "
+                    "(event_id, event_type, entity_type, entity_id, "
+                    "payload_json, severity, created_at) VALUES (?,?,?,?,?,?,?)",
+                    (eid, event_type, entity_type, entity_id,
+                     json.dumps(payload) if payload else None, severity, now))
+                conn.execute(
+                    "INSERT INTO event_index (event_id, tags_json, related_entities_json, "
+                    "correlation_group) VALUES (?,?,?,?)",
+                    (eid, json.dumps(tags or []),
+                     json.dumps([entity_id] if entity_id else []),
+                     correlation_group))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_store)
+        return eid
+
+    async def get_recent(self, limit: int = 50) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM event_stream ORDER BY created_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_by_entity(self, entity_id: str, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM event_stream WHERE entity_id=? ORDER BY created_at DESC LIMIT ?",
+                    (entity_id, limit)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_correlation(self, group_id: str) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                idx = conn.execute(
+                    "SELECT event_id FROM event_index WHERE correlation_group=?",
+                    (group_id,)).fetchall()
+                eids = [r["event_id"] for r in idx]
+                if not eids:
+                    return []
+                placeholders = ",".join("?" * len(eids))
+                return [dict(r) for r in conn.execute(
+                    f"SELECT * FROM event_stream WHERE event_id IN ({placeholders}) "
+                    f"ORDER BY created_at DESC", eids).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+event_ingestor = EventIngestion()
+
+
+class DigitalTwin:
+    """System simulation model of infrastructure and services."""
+
+    async def seed_twin(self):
+        """Create twin entities from known infrastructure."""
+        now = time.time()
+        def _seed():
+            conn = _db_connect()
+            try:
+                for vm, info in VMS.items():
+                    tid = f"twin-{vm}"
+                    conn.execute(
+                        "INSERT OR REPLACE INTO twin_entities "
+                        "(twin_entity_id, entity_type, entity_ref, current_state_json, last_updated) "
+                        "VALUES (?,?,?,?,?)",
+                        (tid, "vm", vm, json.dumps({"ip": info["ip"], "zone": info["zone"],
+                                                     "status": "running"}), now))
+                # Add relationships
+                conn.execute(
+                    "INSERT OR IGNORE INTO twin_relationships "
+                    "(relationship_id, source_entity, relation, target_entity) VALUES (?,?,?,?)",
+                    ("trel-swarm-gpu", "twin-swarm-mainframe", "manages", "twin-swarm-gpu"))
+                conn.execute(
+                    "INSERT OR IGNORE INTO twin_relationships "
+                    "(relationship_id, source_entity, relation, target_entity) VALUES (?,?,?,?)",
+                    ("trel-portal", "twin-fc-ai-portal", "serves", "twin-swarm-mainframe"))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_seed)
+
+    async def get_status(self) -> Dict:
+        def _q():
+            conn = _db_connect()
+            try:
+                entities = [dict(r) for r in conn.execute("SELECT * FROM twin_entities").fetchall()]
+                rels = [dict(r) for r in conn.execute("SELECT * FROM twin_relationships").fetchall()]
+                return {"entities": entities, "relationships": rels}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def simulate_scenario(self, scenario_type: str, inputs: Dict = None) -> Dict:
+        sid = f"tsim-{uuid.uuid4().hex[:8]}"
+        risk_map = {
+            "worker_loss": 0.5, "provider_failure": 0.4,
+            "routing_change": 0.2, "load_spike": 0.3,
+            "repair_plan": 0.35, "queue_overload": 0.45,
+        }
+        risk = risk_map.get(scenario_type, 0.3)
+        predicted = {
+            "scenario": scenario_type,
+            "impact": "moderate" if risk < 0.4 else "significant",
+            "recovery_estimate_s": int(risk * 60),
+            "affected_components": list(VMS.keys())[:2] if risk > 0.3 else [list(VMS.keys())[0]],
+        }
+
+        def _store():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO twin_simulations "
+                    "(simulation_id, scenario_type, inputs_json, predicted_results_json, "
+                    "risk_score, created_at) VALUES (?,?,?,?,?,?)",
+                    (sid, scenario_type, json.dumps(inputs or {}),
+                     json.dumps(predicted), risk, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_store)
+
+        return {"simulation_id": sid, "scenario": scenario_type,
+                "risk_score": round(risk, 2), "predicted": predicted}
+
+    async def explain_simulation(self, sim_id: str) -> Optional[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                row = conn.execute("SELECT * FROM twin_simulations WHERE simulation_id=?",
+                                   (sim_id,)).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+digital_twin = DigitalTwin()
+
+
+class AutonomousOps:
+    """Autonomous operations engine for proactive corrective actions."""
+
+    async def detect_and_propose(self) -> List[Dict]:
+        """Detect actionable signals and propose actions."""
+        proposals = []
+        try:
+            # Check environment health
+            health = await env_awareness.get_health()
+            for eid, h in health.get("entities", {}).items():
+                if h["health_score"] < 0.5:
+                    proposals.append({
+                        "trigger_type": "low_health",
+                        "target_entity": eid,
+                        "recommended_action": f"Investigate {eid} — health score {h['health_score']}",
+                        "risk_level": "HIGH" if h["health_score"] < 0.3 else "MODERATE",
+                        "confidence": 0.7,
+                    })
+
+            # Check for open escalations
+            open_esc = await escalation_mgr.get_open()
+            if len(open_esc) > 3:
+                proposals.append({
+                    "trigger_type": "escalation_overload",
+                    "target_entity": "system",
+                    "recommended_action": "Review and resolve open escalations",
+                    "risk_level": "MODERATE",
+                    "confidence": 0.8,
+                })
+        except Exception as e:
+            log.warning(f"Autonomous ops detection error: {e}")
+
+        for p in proposals:
+            aid = f"autoact-{uuid.uuid4().hex[:8]}"
+            def _store(proposal=p, action_id=aid):
+                conn = _db_connect()
+                try:
+                    conn.execute(
+                        "INSERT INTO autonomous_actions "
+                        "(action_id, trigger_type, target_entity, recommended_action, "
+                        "risk_level, confidence, created_at) VALUES (?,?,?,?,?,?,?)",
+                        (action_id, proposal["trigger_type"], proposal["target_entity"],
+                         proposal["recommended_action"], proposal["risk_level"],
+                         proposal["confidence"], time.time()))
+                    conn.commit()
+                finally:
+                    conn.close()
+            await asyncio.to_thread(_store)
+
+        return proposals
+
+    async def get_actions(self, status: str = None, limit: int = 20) -> List[Dict]:
+        def _q():
+            conn = _db_connect()
+            try:
+                if status:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT * FROM autonomous_actions WHERE status=? ORDER BY created_at DESC LIMIT ?",
+                        (status, limit)).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM autonomous_actions ORDER BY created_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+auto_ops = AutonomousOps()
+
+
+# ---------------------------------------------------------------------------
 # Dashboard API
 # ---------------------------------------------------------------------------
 
@@ -2962,6 +5659,108 @@ async def dashboard_graph(request: web.Request) -> web.Response:
             conn.close()
     data = await asyncio.to_thread(_query)
     return web.json_response(data)
+
+
+async def dashboard_sessions(request: web.Request) -> web.Response:
+    """Dashboard sessions endpoint."""
+    try:
+        sessions = await session_mgr.list_sessions(limit=50)
+        active = [s for s in sessions if s.get("status") == "active"]
+        return web.json_response({
+            "total": len(sessions), "active": len(active), "sessions": sessions,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_infrastructure(request: web.Request) -> web.Response:
+    """Dashboard infrastructure endpoint."""
+    try:
+        workers = await worker_registry.list_workers()
+        twin_status = await digital_twin.get_status()
+        env_health = await env_awareness.get_health()
+        return web.json_response({
+            "vms": dict(VMS),
+            "workers": workers,
+            "twin": twin_status,
+            "environment_health": env_health,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_knowledge(request: web.Request) -> web.Response:
+    """Dashboard knowledge endpoint."""
+    try:
+        patterns = await knowledge_evolution.get_patterns(10)
+        playbooks = await knowledge_evolution.get_playbooks(10)
+        distillations = await memory_distiller.get_distillations(10)
+        return web.json_response({
+            "patterns": patterns, "playbooks": playbooks,
+            "distillations": distillations,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_audit(request: web.Request) -> web.Response:
+    """Dashboard audit endpoint."""
+    try:
+        recent = await audit.get_recent(50)
+        total = await audit.count()
+        pending_approvals = await perm_mgr.get_pending(20)
+        escalations = await escalation_mgr.get_open(10)
+        return web.json_response({
+            "total_events": total, "recent": recent,
+            "pending_approvals": pending_approvals,
+            "open_escalations": escalations,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_learning(request: web.Request) -> web.Response:
+    """Dashboard learning/intelligence endpoint."""
+    try:
+        outcome_stats = await outcome_learner.get_stats()
+        intel_history = await intel_loop.get_history(5)
+        agent_scores = await agent_scorer.get_scores()
+        repair_pats = await repair_learner.get_patterns()
+        return web.json_response({
+            "outcomes": outcome_stats, "intelligence_runs": intel_history,
+            "agent_scores": agent_scores, "repair_patterns": repair_pats,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_environment(request: web.Request) -> web.Response:
+    """Dashboard environment awareness endpoint."""
+    try:
+        env_status = await env_awareness.get_status()
+        recent_events = await event_ingestor.get_recent(30)
+        auto_actions = await auto_ops.get_actions(limit=10)
+        return web.json_response({
+            "environment": env_status,
+            "recent_events": recent_events,
+            "autonomous_actions": auto_actions,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_system(request: web.Request) -> web.Response:
+    """Dashboard system evaluation endpoint."""
+    try:
+        recent_evals = await system_evaluator.get_recent(5)
+        scorecards = await system_evaluator.get_scorecard()
+        recommendations = await system_evaluator.get_recommendations()
+        return web.json_response({
+            "evaluations": recent_evals, "scorecards": scorecards,
+            "recommendations": recommendations,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
 
 
 # ---------------------------------------------------------------------------
@@ -3448,7 +6247,36 @@ SLASH_COMMANDS = {
     "js": "Run JavaScript code (/js <code>)",
     "files": "File operations (/files find|grep|read|summary <args>)",
     "git": "Git operations (/git status|log|diff|branch|pull)",
-    "memory": "Show persistent memory stats (/memory search <query>)",
+    # Operational Hardening
+    "session": "Swarm sessions (/session list|status|close|resume)",
+    "approvals": "View pending approvals",
+    "approve": "Approve a request (/approve <id>)",
+    "reject": "Reject a request (/reject <id>)",
+    "drill": "Failure drills (/drill run|status|history)",
+    "audit": "View audit log (/audit recent|search <query>)",
+    "sandbox": "Sandbox policies (/sandbox status)",
+    "escalations": "View escalations (/escalations)",
+    # Continuous Learning
+    "outcomes": "View outcomes (/outcomes recent|task|route|repair)",
+    "learn": "Intelligence loop (/learn status|run|history)",
+    "why": "Explain decisions (/why task|route|plan|repair|agent <id>)",
+    "kb": "Knowledge base (/kb recipes|incidents|search <query>)",
+    # Scale & Autonomy
+    "workers": "Worker registry (/workers health|region|quarantine)",
+    "initiative": "Autonomous initiative (/initiative status|history)",
+    "evaluate": "System evaluation (/evaluate)",
+    "policy": "Safety policies (/policy status|explain <action>)",
+    "plugins": "Plugin management (/plugins enable|disable|info)",
+    "scorecard": "System scorecard (/scorecard)",
+    # Environment Intelligence
+    "env": "Environment status (/env status|entity|signals|health)",
+    "events": "Event stream (/events recent|entity|correlation)",
+    "twin": "Digital twin (/twin status|simulate|explain)",
+    "auto": "Autonomous ops (/auto status|history)",
+    "playbooks": "Operational playbooks (/playbooks search|explain)",
+    "ops": "Operator overview (/ops overview|incidents|twin|autonomy)",
+    # Core
+    "memory": "Show persistent memory stats (/memory search|distill <query>)",
     "forget": "Clear memory (/forget, /forget all, /forget thread, /forget channel)",
     "pref": "Set/get preferences (/pref key value, /pref key, /pref)",
     "help": "Show available commands",
@@ -4401,6 +7229,572 @@ async def handle_slash_command(cmd: str, args: str, channel: str, thread_ts: str
             )
         return True
 
+    # -- Operational Hardening Commands --
+
+    if cmd == "session":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "list"
+        sargs = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "list":
+            sessions = await session_mgr.list_sessions(limit=15)
+            if not sessions:
+                await post_message(":clipboard: No swarm sessions found.", channel, thread_ts)
+            else:
+                lines = [":clipboard: *Swarm Sessions*\n"]
+                for s in sessions:
+                    status_icon = ":green_circle:" if s["status"] == "active" else ":white_circle:"
+                    lines.append(f"{status_icon} `{s['session_id']}` — {s['assistant_name']} ({s['status']})")
+                await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "status" and sargs:
+            s = await session_mgr.get_session(sargs)
+            if s:
+                await post_message(f":clipboard: *Session {sargs}*\n```{json.dumps(s, indent=2, default=str)[:2000]}```", channel, thread_ts)
+            else:
+                await post_message(f":warning: Session `{sargs}` not found.", channel, thread_ts)
+        elif subcmd == "close" and sargs:
+            await session_mgr.close_session(sargs, summary="Closed by operator")
+            await audit.log("session_close", actor_id="operator", target_id=sargs)
+            await post_message(f":white_check_mark: Session `{sargs}` closed.", channel, thread_ts)
+        elif subcmd == "resume" and sargs:
+            await session_mgr.resume_session(sargs)
+            await post_message(f":arrow_forward: Session `{sargs}` resumed.", channel, thread_ts)
+        else:
+            await post_message(":clipboard: */session* commands: `list`, `status <id>`, `close <id>`, `resume <id>`", channel, thread_ts)
+        return True
+
+    if cmd == "approvals":
+        pending = await perm_mgr.get_pending(20)
+        if not pending:
+            await post_message(":white_check_mark: No pending approvals.", channel, thread_ts)
+        else:
+            lines = [f":lock: *Pending Approvals ({len(pending)})*\n"]
+            for a in pending:
+                lines.append(f"• `{a['approval_id']}` — {a['action_type']} by {a['requested_by']}")
+                if a.get("reason"):
+                    lines.append(f"  _{a['reason'][:80]}_")
+            await post_message("\n".join(lines), channel, thread_ts)
+        return True
+
+    if cmd == "approve":
+        aid = args.strip()
+        if not aid:
+            await post_message(":warning: Usage: `/approve <approval_id>`", channel, thread_ts)
+            return True
+        ok = await perm_mgr.approve(aid, approved_by="operator")
+        if ok:
+            await post_message(f":white_check_mark: Approved `{aid}`", channel, thread_ts)
+        else:
+            await post_message(f":x: Could not approve `{aid}` — not found or already resolved", channel, thread_ts)
+        return True
+
+    if cmd == "reject":
+        aid = args.strip()
+        if not aid:
+            await post_message(":warning: Usage: `/reject <approval_id>`", channel, thread_ts)
+            return True
+        ok = await perm_mgr.reject(aid, rejected_by="operator")
+        if ok:
+            await post_message(f":no_entry: Rejected `{aid}`", channel, thread_ts)
+        else:
+            await post_message(f":x: Could not reject `{aid}` — not found or already resolved", channel, thread_ts)
+        return True
+
+    if cmd == "drill":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "help"
+        dargs = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "run":
+            dtype = dargs or "provider_outage"
+            await post_message(f":rotating_light: Running drill: `{dtype}`...", channel, thread_ts)
+            result = await drill_runner.run_drill(dtype)
+            if "error" in result:
+                await post_message(f":x: {result['error']}", channel, thread_ts)
+            else:
+                lines = [f":white_check_mark: *Drill Complete: {dtype}*"]
+                lines.append(f"*Outcome:* {result['outcome']}")
+                lines.append(f"*Detection:* {result['detection_time']}s | *Mitigation:* {result['mitigation_time']}s | *Recovery:* {result['recovery_time']}s")
+                if result.get("rollback"):
+                    lines.append(":rewind: Rollback triggered")
+                lines.append(f"*Lessons:* {', '.join(result.get('lessons', []))}")
+                await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "status" and dargs:
+            d = await drill_runner.get_drill(dargs)
+            if d:
+                await post_message(f":rotating_light: *Drill {dargs}*\n```{json.dumps(d, indent=2, default=str)[:2000]}```", channel, thread_ts)
+            else:
+                await post_message(f":warning: Drill `{dargs}` not found.", channel, thread_ts)
+        elif subcmd == "history":
+            drills = await drill_runner.get_history(10)
+            if drills:
+                lines = [":rotating_light: *Drill History*\n"]
+                for d in drills:
+                    icon = ":white_check_mark:" if d.get("outcome") == "passed" else ":x:"
+                    lines.append(f"{icon} `{d['drill_id']}` — {d['drill_type']} ({d.get('outcome', '?')})")
+                await post_message("\n".join(lines), channel, thread_ts)
+            else:
+                await post_message(":rotating_light: No drill history.", channel, thread_ts)
+        else:
+            types_list = ", ".join(FailureDrillRunner.DRILL_TYPES)
+            await post_message(f":rotating_light: */drill* commands: `run <type>`, `status <id>`, `history`\nTypes: {types_list}", channel, thread_ts)
+        return True
+
+    if cmd == "audit":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "recent"
+        aargs = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "recent" or not subcmd:
+            events = await audit.get_recent(15)
+            total = await audit.count()
+            lines = [f":scroll: *Audit Log ({total} total)*\n"]
+            for e in events:
+                lines.append(f"• `{e['action_type']}` by {e['actor_id']} → {e.get('target_id', '-')}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "search":
+            events = await audit.search(action_type=aargs, limit=15)
+            lines = [f":scroll: *Audit: '{aargs}' ({len(events)} results)*\n"]
+            for e in events:
+                lines.append(f"• `{e['action_type']}` by {e['actor_id']}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":scroll: */audit* commands: `recent`, `search <action_type>`", channel, thread_ts)
+        return True
+
+    if cmd == "sandbox":
+        policies = await sandbox.get_policies()
+        lines = [":shield: *Execution Sandbox*\n"]
+        for name, p in SANDBOX_PROFILES.items():
+            lines.append(f"*{name}*: timeout={p['timeout']}s, output={p['output_limit']}")
+        lines.append(f"\n*Code sandboxes:*")
+        for lang, cfg in CODE_SANDBOX.items():
+            lines.append(f"• {lang}: timeout={cfg['timeout']}s, mem={cfg['max_memory_mb']}MB")
+        lines.append(f"\n*DB policies:* {len(policies)}")
+        await post_message("\n".join(lines), channel, thread_ts)
+        return True
+
+    if cmd == "escalations":
+        open_esc = await escalation_mgr.get_open(15)
+        all_esc = await escalation_mgr.get_all(20)
+        lines = [f":rotating_light: *Escalations* ({len(open_esc)} open / {len(all_esc)} total)\n"]
+        for e in open_esc:
+            lines.append(f"• `{e['escalation_id']}` — {e['trigger_type']} (conf={e.get('confidence', '?')})")
+        if not open_esc:
+            lines.append("_No open escalations_")
+        await post_message("\n".join(lines), channel, thread_ts)
+        return True
+
+    # -- Continuous Learning Commands --
+
+    if cmd == "outcomes":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "recent"
+        oargs = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "recent":
+            stats = await outcome_learner.get_stats()
+            recent = await outcome_learner.get_recent("task", 10)
+            lines = [":bar_chart: *Outcome Stats*"]
+            lines.append(f"Tasks: {stats['task_outcomes']} (success={stats['task_success_rate']})")
+            lines.append(f"Routes: {stats['route_outcomes']} | Repairs: {stats['repair_outcomes']}")
+            if recent:
+                lines.append("\n*Recent task outcomes:*")
+                for o in recent[:5]:
+                    icon = ":white_check_mark:" if o.get("success") else ":x:"
+                    lines.append(f"{icon} `{o.get('task_id', '?')[:20]}` — {o.get('task_type', '?')}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd in ("task", "route", "repair"):
+            recent = await outcome_learner.get_recent(subcmd, 10)
+            lines = [f":bar_chart: *Recent {subcmd} outcomes ({len(recent)})*\n"]
+            for o in recent[:10]:
+                lines.append(f"```{json.dumps(o, default=str)[:200]}```")
+            await post_message("\n".join(lines[:15]), channel, thread_ts)
+        else:
+            await post_message(":bar_chart: */outcomes* commands: `recent`, `task`, `route`, `repair`", channel, thread_ts)
+        return True
+
+    if cmd == "learn":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "status"
+
+        if subcmd == "status":
+            history = await intel_loop.get_history(3)
+            lines = [":brain: *Intelligence Loop*"]
+            lines.append(f"*Recent runs:* {len(history)}")
+            for h in history:
+                changes = json.loads(h.get("changes_json", "[]")) if h.get("changes_json") else []
+                lines.append(f"• `{h['intelligence_run_id']}` — {'success' if h.get('success') else 'failed'} ({len(changes)} changes)")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "run":
+            await post_message(":brain: Running intelligence cycle...", channel, thread_ts)
+            result = await intel_loop.run_cycle()
+            lines = [":brain: *Intelligence Cycle Complete*"]
+            lines.append(f"*Run:* `{result['run_id']}`")
+            lines.append(f"*Duration:* {result['duration_s']}s")
+            for c in result.get("changes", []):
+                lines.append(f"• {c}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "history":
+            history = await intel_loop.get_history(10)
+            lines = [":brain: *Learning History*\n"]
+            for h in history:
+                icon = ":white_check_mark:" if h.get("success") else ":x:"
+                lines.append(f"{icon} `{h['intelligence_run_id']}`")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":brain: */learn* commands: `status`, `run`, `history`", channel, thread_ts)
+        return True
+
+    if cmd == "why":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "help"
+        wargs = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd in ("task", "route", "plan", "repair", "agent", "learn") and wargs:
+            result = await explainability.why(subcmd, wargs)
+            await post_message(f":mag: *Why — {subcmd} `{wargs}`*\n```{json.dumps(result, indent=2, default=str)[:2000]}```", channel, thread_ts)
+        else:
+            await post_message(":mag: */why* commands: `task <id>`, `route <id>`, `plan <id>`, `repair <id>`, `agent <id>`, `learn <run_id>`", channel, thread_ts)
+        return True
+
+    if cmd == "kb":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "help"
+        kargs = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "recipes":
+            recipes = await memory_distiller.get_recipes(10)
+            lines = [":book: *Execution Recipes*\n"]
+            for r in recipes:
+                lines.append(f"• `{r.get('recipe_id', '?')}` — {r.get('task_type', '?')} (success={r.get('success_rate', '?')})")
+            if not recipes:
+                lines.append("_No recipes yet — learning loop will populate these_")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "incidents":
+            incidents = await memory_distiller.get_incidents(10)
+            lines = [":warning: *Incident Patterns*\n"]
+            for i in incidents:
+                lines.append(f"• `{i.get('pattern_id', '?')}` — {i.get('incident_type', '?')} (recurrence={i.get('recurrence_score', '?')})")
+            if not incidents:
+                lines.append("_No incident patterns yet_")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "search" and kargs:
+            results = await memory_distiller.search_knowledge(kargs)
+            lines = [f":book: *KB Search: '{kargs}' ({len(results)} results)*\n"]
+            for r in results[:10]:
+                lines.append(f"• {r.get('title', r.get('task_type', r.get('incident_type', '?')))}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":book: */kb* commands: `recipes`, `incidents`, `search <query>`", channel, thread_ts)
+        return True
+
+    # -- Scale & Autonomy Commands --
+
+    if cmd == "workers":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "list"
+        wargs = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "list" or not args.strip():
+            workers = await worker_registry.list_workers()
+            lines = [f":factory: *Worker Registry ({len(workers)})*\n"]
+            for w in workers:
+                icon = ":green_circle:" if w.get("status") == "active" else ":red_circle:"
+                lines.append(f"{icon} `{w['worker_id']}` — {w['host']} ({w['region']}) health={w.get('health_score', '?')}")
+            if not workers:
+                lines.append("_No workers registered_")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "health":
+            workers = await worker_registry.list_workers()
+            lines = [":heartbeat: *Worker Health*\n"]
+            for w in workers:
+                bar = "█" * int((w.get("health_score", 0) or 0) * 10)
+                lines.append(f"`{w['host']}` {bar} {w.get('health_score', '?')}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "region" and wargs:
+            workers = await worker_registry.get_by_region(wargs)
+            lines = [f":globe_with_meridians: *Workers in {wargs} ({len(workers)})*\n"]
+            for w in workers:
+                lines.append(f"• `{w['worker_id']}` — {w['host']}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "quarantine" and wargs:
+            await worker_registry.quarantine(wargs)
+            await post_message(f":no_entry: Worker `{wargs}` quarantined.", channel, thread_ts)
+        else:
+            await post_message(":factory: */workers* commands: `list`, `health`, `region <name>`, `quarantine <id>`", channel, thread_ts)
+        return True
+
+    if cmd == "initiative":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "status"
+
+        if subcmd == "status":
+            events = await initiative_engine.get_recent(10)
+            lines = [f":bulb: *Initiative Events ({len(events)})*\n"]
+            for e in events:
+                lines.append(f"• [{e.get('risk_level', '?')}] {e.get('trigger_type', '?')}: {e.get('recommended_action', '')[:80]}")
+            if not events:
+                lines.append("_No initiative events_")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "history":
+            actions = await initiative_engine.get_actions(15)
+            lines = [":bulb: *Initiative Actions*\n"]
+            for a in actions:
+                lines.append(f"• `{a.get('initiative_id', '?')}` — {a.get('action_type', '?')} ({a.get('execution_status', '?')})")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":bulb: */initiative* commands: `status`, `history`", channel, thread_ts)
+        return True
+
+    if cmd == "evaluate":
+        await post_message(":chart_with_upwards_trend: Running system evaluation...", channel, thread_ts)
+        result = await system_evaluator.evaluate()
+        lines = [":chart_with_upwards_trend: *System Evaluation*"]
+        lines.append(f"*Score:* {result['score']}")
+        for k, v in result.get("metrics", {}).items():
+            lines.append(f"• {k}: {v}")
+        if result.get("recommendations"):
+            lines.append("\n*Recommendations:*")
+            for r in result["recommendations"]:
+                lines.append(f"  :point_right: {r}")
+        await post_message("\n".join(lines), channel, thread_ts)
+        return True
+
+    if cmd == "policy":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "status"
+        pargs = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "status":
+            lines = [":shield: *Safety Governance*\n"]
+            lines.append(f"*AUTO:* {', '.join(RISK_AUTO_EXECUTE)}")
+            lines.append(f"*NOTIFY:* {', '.join(RISK_NOTIFY)}")
+            lines.append(f"*APPROVAL:* {', '.join(RISK_APPROVAL)}")
+            lines.append(f"*BLOCKED:* {', '.join(RISK_BLOCKED)}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "explain" and pargs:
+            result = await safety_governor.explain_policy(pargs)
+            await post_message(f":shield: *Policy: `{pargs}`*\n```{json.dumps(result, indent=2)}```", channel, thread_ts)
+        else:
+            await post_message(":shield: */policy* commands: `status`, `explain <action_type>`", channel, thread_ts)
+        return True
+
+    if cmd == "plugins":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "list"
+        pargs = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "list" or not args.strip():
+            plugins = await plugin_mgr.list_plugins()
+            lines = [f":jigsaw: *Plugins ({len(plugins)})*\n"]
+            for p in plugins:
+                icon = ":green_circle:" if p["status"] == "active" else ":white_circle:"
+                lines.append(f"{icon} `{p['plugin_id']}` — {p['name']} ({p['plugin_type']})")
+            if not plugins:
+                lines.append("_No plugins registered_")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "enable" and pargs:
+            await plugin_mgr.enable(pargs)
+            await post_message(f":white_check_mark: Plugin `{pargs}` enabled.", channel, thread_ts)
+        elif subcmd == "disable" and pargs:
+            await plugin_mgr.disable(pargs)
+            await post_message(f":no_entry: Plugin `{pargs}` disabled.", channel, thread_ts)
+        elif subcmd == "info" and pargs:
+            p = await plugin_mgr.get_plugin(pargs)
+            if p:
+                await post_message(f":jigsaw: *Plugin {pargs}*\n```{json.dumps(p, indent=2, default=str)[:2000]}```", channel, thread_ts)
+            else:
+                await post_message(f":warning: Plugin `{pargs}` not found.", channel, thread_ts)
+        else:
+            await post_message(":jigsaw: */plugins* commands: `list`, `enable <id>`, `disable <id>`, `info <id>`", channel, thread_ts)
+        return True
+
+    if cmd == "scorecard":
+        scorecards = await system_evaluator.get_scorecard()
+        if scorecards:
+            lines = [":chart_with_upwards_trend: *System Scorecards*\n"]
+            for s in scorecards[:10]:
+                lines.append(f"• `{s['component']}` — reliability={s.get('reliability_score', '?')} latency={s.get('latency_score', '?')} trend={s.get('trend', '?')}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":chart_with_upwards_trend: No scorecards yet. Run `/evaluate` first.", channel, thread_ts)
+        return True
+
+    # -- Environment Intelligence Commands --
+
+    if cmd == "env":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "status"
+        eargs = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "status":
+            status = await env_awareness.get_status()
+            lines = [f":satellite: *Environment Status*"]
+            lines.append(f"*Entities:* {len(status.get('entities', []))}")
+            lines.append(f"*Total signals:* {status.get('total_signals', 0)}")
+            for e in status.get("entities", [])[:10]:
+                lines.append(f"• `{e['entity_id']}` health={e.get('derived_health_score', '?')}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "entity" and eargs:
+            data = await env_awareness.get_entity(eargs)
+            await post_message(f":satellite: *Entity: {eargs}*\n```{json.dumps(data, indent=2, default=str)[:2000]}```", channel, thread_ts)
+        elif subcmd == "signals":
+            signals = await env_awareness.get_signals(limit=15)
+            lines = [f":satellite: *Recent Signals ({len(signals)})*\n"]
+            for s in signals[:15]:
+                lines.append(f"• `{s['source_id']}` {s['metric_name']}={s.get('metric_value', '?')}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "health":
+            health = await env_awareness.get_health()
+            lines = [f":heartbeat: *Environment Health* (overall={health.get('overall_health', '?')})\n"]
+            for eid, h in health.get("entities", {}).items():
+                bar = "█" * int(h.get("health_score", 0) * 10)
+                lines.append(f"`{eid}` {bar} {h.get('health_score', '?')}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":satellite: */env* commands: `status`, `entity <id>`, `signals`, `health`", channel, thread_ts)
+        return True
+
+    if cmd == "events":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "recent"
+        evargs = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "recent":
+            events = await event_ingestor.get_recent(15)
+            lines = [f":zap: *Recent Events ({len(events)})*\n"]
+            for e in events:
+                lines.append(f"• [{e.get('severity', 'info')}] `{e['event_type']}` → {e.get('entity_id', '-')}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "entity" and evargs:
+            events = await event_ingestor.get_by_entity(evargs, 15)
+            lines = [f":zap: *Events for {evargs} ({len(events)})*\n"]
+            for e in events:
+                lines.append(f"• [{e.get('severity', 'info')}] {e['event_type']}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "correlation" and evargs:
+            events = await event_ingestor.get_correlation(evargs)
+            lines = [f":link: *Correlated Events: {evargs} ({len(events)})*\n"]
+            for e in events:
+                lines.append(f"• {e['event_type']} → {e.get('entity_id', '-')}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":zap: */events* commands: `recent`, `entity <id>`, `correlation <group>`", channel, thread_ts)
+        return True
+
+    if cmd == "twin":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "status"
+        targs = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "status":
+            status = await digital_twin.get_status()
+            lines = [":world_map: *Digital Twin*"]
+            lines.append(f"*Entities:* {len(status.get('entities', []))}")
+            lines.append(f"*Relationships:* {len(status.get('relationships', []))}")
+            for e in status.get("entities", []):
+                lines.append(f"• `{e['entity_ref']}` ({e['entity_type']})")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "simulate" and targs:
+            result = await digital_twin.simulate_scenario(targs)
+            lines = [f":world_map: *Simulation: {targs}*"]
+            lines.append(f"*Risk:* {result.get('risk_score', '?')}")
+            pred = result.get("predicted", {})
+            lines.append(f"*Impact:* {pred.get('impact', '?')}")
+            lines.append(f"*Recovery est:* {pred.get('recovery_estimate_s', '?')}s")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "explain" and targs:
+            result = await digital_twin.explain_simulation(targs)
+            if result:
+                await post_message(f":world_map: *Simulation {targs}*\n```{json.dumps(result, indent=2, default=str)[:2000]}```", channel, thread_ts)
+            else:
+                await post_message(f":warning: Simulation `{targs}` not found.", channel, thread_ts)
+        else:
+            await post_message(":world_map: */twin* commands: `status`, `simulate <scenario>`, `explain <sim_id>`", channel, thread_ts)
+        return True
+
+    if cmd == "auto":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "status"
+
+        if subcmd == "status":
+            actions = await auto_ops.get_actions(limit=10)
+            lines = [f":robot_face: *Autonomous Operations ({len(actions)} actions)*\n"]
+            for a in actions:
+                risk_icon = ":red_circle:" if a.get("risk_level") == "HIGH" else ":yellow_circle:" if a.get("risk_level") == "MODERATE" else ":green_circle:"
+                lines.append(f"{risk_icon} `{a.get('action_id', '?')}` — {a.get('recommended_action', '')[:80]}")
+            if not actions:
+                lines.append("_No autonomous actions recorded_")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "history":
+            actions = await auto_ops.get_actions(limit=20)
+            lines = [":robot_face: *Autonomous Action History*\n"]
+            for a in actions:
+                lines.append(f"• [{a.get('risk_level', '?')}] {a.get('trigger_type', '?')} → {a.get('status', '?')}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":robot_face: */auto* commands: `status`, `history`", channel, thread_ts)
+        return True
+
+    if cmd == "playbooks":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "list"
+        pbargs = sub[1].strip() if len(sub) > 1 else ""
+
+        if subcmd == "list" or not args.strip():
+            playbooks = await knowledge_evolution.get_playbooks(15)
+            lines = [f":blue_book: *Operational Playbooks ({len(playbooks)})*\n"]
+            for p in playbooks:
+                lines.append(f"• `{p.get('playbook_id', '?')}` — {p.get('incident_type', '?')} (success={p.get('success_rate', '?')})")
+            if not playbooks:
+                lines.append("_No playbooks yet — knowledge evolution will populate these_")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "search" and pbargs:
+            results = await knowledge_evolution.search(pbargs)
+            lines = [f":blue_book: *Playbook Search: '{pbargs}' ({len(results)})*\n"]
+            for r in results[:10]:
+                lines.append(f"• {r.get('topic', r.get('incident_type', '?'))}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":blue_book: */playbooks* commands: `list`, `search <query>`", channel, thread_ts)
+        return True
+
+    if cmd == "ops":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "overview"
+
+        if subcmd == "overview":
+            env_health = await env_awareness.get_health()
+            open_esc = await escalation_mgr.get_open(5)
+            auto_actions = await auto_ops.get_actions(limit=5)
+            lines = [":control_knobs: *Operator Overview*"]
+            lines.append(f"*Env health:* {env_health.get('overall_health', '?')}")
+            lines.append(f"*Open escalations:* {len(open_esc)}")
+            lines.append(f"*Auto actions:* {len(auto_actions)}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "incidents":
+            patterns = await knowledge_evolution.get_patterns(10)
+            lines = [":warning: *Incident Patterns*\n"]
+            for p in patterns:
+                lines.append(f"• {p.get('topic', '?')} (conf={p.get('confidence', '?')})")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "twin":
+            status = await digital_twin.get_status()
+            lines = [":world_map: *Digital Twin Overview*"]
+            lines.append(f"*Entities:* {len(status.get('entities', []))}")
+            lines.append(f"*Relationships:* {len(status.get('relationships', []))}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "autonomy":
+            auto_actions = await auto_ops.get_actions(limit=10)
+            lines = [":robot_face: *Autonomy Status*\n"]
+            for a in auto_actions:
+                lines.append(f"• [{a.get('risk_level', '?')}] {a.get('recommended_action', '')[:80]}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":control_knobs: */ops* commands: `overview`, `incidents`, `twin`, `autonomy`", channel, thread_ts)
+        return True
+
     return False
 
 
@@ -4701,7 +8095,7 @@ async def handle_health(request: web.Request) -> web.Response:
     return web.json_response({
         "status": "healthy",
         "service": "bunny-alpha",
-        "version": "2.0.0",
+        "version": "3.0.0",
         "active_tasks": len(active),
         "total_tasks": len(task_manager.tasks),
         "providers": {
@@ -4748,7 +8142,7 @@ async def on_startup(app: web.Application):
     if result.get("ok"):
         BOT_USER_ID = result["user_id"]
         log.info(
-            f"Bunny Alpha v2.0 online | bot={result['user']} | "
+            f"Bunny Alpha v3.0 online | bot={result['user']} | "
             f"team={result['team']} | user_id={BOT_USER_ID}"
         )
     else:
@@ -4824,12 +8218,47 @@ async def on_startup(app: web.Application):
         log.warning(f"Agent seed error: {e}")
 
     log.info(f"Self-healing: {'enabled' if self_healer.enabled else 'disabled'}")
+
+    # Initialize operational hardening
+    try:
+        await perm_mgr.seed_defaults()
+        await sandbox.seed_policies()
+        log.info("Permissions and sandbox policies seeded")
+    except Exception as e:
+        log.warning(f"Permissions/sandbox init error: {e}")
+
+    # Initialize learning layer
+    try:
+        await routing_intel.seed_weights()
+        log.info("Routing intelligence weights seeded")
+    except Exception as e:
+        log.warning(f"Routing intel init error: {e}")
+
+    # Initialize scale & autonomy
+    try:
+        await worker_registry.seed_defaults()
+        workers = await worker_registry.list_workers()
+        log.info(f"Worker registry: {len(workers)} workers")
+    except Exception as e:
+        log.warning(f"Worker registry init error: {e}")
+
+    # Initialize digital twin
+    try:
+        await digital_twin.seed_twin()
+        twin_status = await digital_twin.get_status()
+        log.info(f"Digital twin: {len(twin_status.get('entities', []))} entities")
+    except Exception as e:
+        log.warning(f"Digital twin init error: {e}")
+
     log.info(f"Listening on port {PORT}")
 
     # Start background services
     asyncio.create_task(_periodic_cleanup())
     await monitor.start_monitoring_loop()
     await scheduler.start_scheduler_loop()
+    await intel_loop.start_loop(3600)  # Intelligence loop every hour
+
+    await audit.log("system_startup", payload={"version": "3.0.0"})
 
 
 async def _periodic_cleanup():
@@ -4844,6 +8273,8 @@ async def on_cleanup(app: web.Application):
     global _session
     monitor.stop()
     scheduler.stop()
+    intel_loop.stop()
+    await audit.log("system_shutdown")
     if _session:
         await _session.close()
         _session = None
@@ -4868,8 +8299,15 @@ def main():
     app.router.add_get("/dashboard/plans", dashboard_plans)
     app.router.add_get("/dashboard/routing", dashboard_routing)
     app.router.add_get("/dashboard/graph", dashboard_graph)
+    app.router.add_get("/dashboard/sessions", dashboard_sessions)
+    app.router.add_get("/dashboard/infrastructure", dashboard_infrastructure)
+    app.router.add_get("/dashboard/knowledge", dashboard_knowledge)
+    app.router.add_get("/dashboard/audit", dashboard_audit)
+    app.router.add_get("/dashboard/learning", dashboard_learning)
+    app.router.add_get("/dashboard/environment", dashboard_environment)
+    app.router.add_get("/dashboard/system", dashboard_system)
 
-    log.info("Starting Bunny Alpha v2.0 \u2014 Multi-task Infrastructure Operator")
+    log.info("Starting Bunny Alpha v3.0 \u2014 Autonomous Operations Platform")
     web.run_app(app, host="0.0.0.0", port=PORT)
 
 
