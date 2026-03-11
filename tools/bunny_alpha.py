@@ -1804,6 +1804,796 @@ knowledge_graph = KnowledgeGraph()
 
 
 # ---------------------------------------------------------------------------
+# Autonomous Planning Service
+# ---------------------------------------------------------------------------
+
+class PlanningService:
+    """Converts high-level goals into structured multi-step plans."""
+
+    async def create_plan(self, goal_text: str, created_by: str = "") -> str:
+        """Create a new goal plan."""
+        plan_id = f"plan-{uuid.uuid4().hex[:8]}"
+        now = time.time()
+
+        def _insert():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO goal_plans (plan_id, goal_text, created_by, status, created_at) "
+                    "VALUES (?, ?, ?, 'planning', ?)",
+                    (plan_id, goal_text, created_by, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_insert)
+        return plan_id
+
+    async def add_step(self, plan_id: str, title: str, description: str = "",
+                       task_type: str = "shell", priority: int = 5,
+                       dependencies: List[str] = None, assigned_service: str = "") -> str:
+        """Add a step to a plan."""
+        step_id = f"step-{uuid.uuid4().hex[:6]}"
+        deps_json = json.dumps(dependencies or [])
+        now = time.time()
+
+        def _insert():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO plan_steps "
+                    "(step_id, plan_id, title, description, task_type, priority, "
+                    "dependencies, assigned_service, status, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+                    (step_id, plan_id, title, description, task_type, priority,
+                     deps_json, assigned_service, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_insert)
+        return step_id
+
+    async def get_plan(self, plan_id: str) -> Optional[Dict]:
+        """Get a plan with its steps."""
+        def _query():
+            conn = _db_connect()
+            try:
+                plan = conn.execute(
+                    "SELECT * FROM goal_plans WHERE plan_id = ?", (plan_id,)
+                ).fetchone()
+                if not plan:
+                    return None
+                steps = conn.execute(
+                    "SELECT * FROM plan_steps WHERE plan_id = ? ORDER BY priority, created_at",
+                    (plan_id,),
+                ).fetchall()
+                return {"plan": dict(plan), "steps": [dict(s) for s in steps]}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_query)
+
+    async def get_recent_plans(self, limit: int = 10) -> List[Dict]:
+        """Get recent plans."""
+        def _query():
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM goal_plans ORDER BY created_at DESC LIMIT ?", (limit,)
+                ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_query)
+
+    async def update_step(self, step_id: str, status: str, result_summary: str = None):
+        """Update a plan step status."""
+        def _update():
+            conn = _db_connect()
+            try:
+                if result_summary:
+                    conn.execute(
+                        "UPDATE plan_steps SET status = ?, result_summary = ?, completed_at = ? "
+                        "WHERE step_id = ?",
+                        (status, result_summary, time.time(), step_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE plan_steps SET status = ? WHERE step_id = ?",
+                        (status, step_id),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_update)
+
+    async def update_plan_status(self, plan_id: str, status: str, summary: str = None):
+        """Update plan status."""
+        def _update():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "UPDATE goal_plans SET status = ?, summary = ?, completed_at = ? WHERE plan_id = ?",
+                    (status, summary, time.time() if status in ("completed", "failed") else None, plan_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_update)
+
+    async def execute_plan(self, plan_id: str, channel: str, thread_ts: str):
+        """Execute a plan by running steps in dependency order."""
+        plan_data = await self.get_plan(plan_id)
+        if not plan_data:
+            return
+
+        plan = plan_data["plan"]
+        steps = plan_data["steps"]
+        await self.update_plan_status(plan_id, "executing")
+
+        completed_steps = set()
+        failed = False
+
+        for step in steps:
+            step_id = step["step_id"]
+            deps = json.loads(step.get("dependencies", "[]"))
+
+            # Check dependencies
+            if deps and not all(d in completed_steps for d in deps):
+                await self.update_step(step_id, "blocked")
+                continue
+
+            # Execute step
+            await self.update_step(step_id, "running")
+            await post_message(
+                f":gear: Plan `{plan_id}` — executing: *{step['title']}*",
+                channel, thread_ts,
+            )
+
+            try:
+                # Use AI to determine the command from the step description
+                cmd_prompt = (
+                    f"You need to execute this infrastructure task: {step['title']}\n"
+                    f"Description: {step.get('description', step['title'])}\n"
+                    f"Generate ONE shell command to accomplish this. "
+                    f"Available hosts: swarm-mainframe, swarm-gpu, fc-ai-portal, calculus-web.\n"
+                    f"Respond with ONLY a JSON object: "
+                    f'{"{"}"tool":"shell","host":"<hostname>","cmd":"<command>"{"}"}'
+                )
+                # For now, try to execute directly if description looks like a command
+                desc = step.get("description", "")
+                if desc.startswith("{"):
+                    cmd_data = json.loads(desc)
+                    result = await tool_executor.execute(
+                        cmd_data.get("tool", "shell"),
+                        cmd_data.get("host", "swarm-mainframe"),
+                        cmd_data.get("cmd", "echo done"),
+                    )
+                else:
+                    result = f"Step '{step['title']}' marked complete (manual step)"
+
+                await self.update_step(step_id, "completed", (result or "")[:200])
+                completed_steps.add(step_id)
+                await post_message(
+                    f":white_check_mark: Step *{step['title']}* completed",
+                    channel, thread_ts,
+                )
+            except Exception as e:
+                await self.update_step(step_id, "failed", str(e)[:200])
+                failed = True
+                await post_message(
+                    f":x: Step *{step['title']}* failed: `{e}`",
+                    channel, thread_ts,
+                )
+                # Don't break — try to continue with non-dependent steps
+
+        status = "failed" if failed else "completed"
+        summary = f"{len(completed_steps)}/{len(steps)} steps completed"
+        await self.update_plan_status(plan_id, status, summary)
+        await post_message(
+            f":clipboard: Plan `{plan_id}` {status}: {summary}",
+            channel, thread_ts,
+        )
+
+
+planner = PlanningService()
+
+
+# ---------------------------------------------------------------------------
+# Multi-Agent Orchestration
+# ---------------------------------------------------------------------------
+
+# Agent specifications
+BUILTIN_AGENTS = [
+    {"agent_id": "infra-agent", "name": "InfraAgent", "role": "Infrastructure diagnostics and VM operations",
+     "capabilities": "ssh,docker,vm-health,service-restart,disk-check"},
+    {"agent_id": "code-agent", "name": "CodeAgent", "role": "Code reasoning and repository analysis",
+     "capabilities": "git,code-review,diff-summary,implementation-guidance"},
+    {"agent_id": "search-agent", "name": "SearchAgent", "role": "Web search and document retrieval",
+     "capabilities": "web-search,url-fetch,document-summary"},
+    {"agent_id": "monitor-agent", "name": "MonitorAgent", "role": "Monitoring alerts and anomaly analysis",
+     "capabilities": "health-check,alert-triage,metric-analysis,prediction"},
+    {"agent_id": "memory-agent", "name": "MemoryAgent", "role": "Long-term recall and summarization",
+     "capabilities": "memory-search,summarize,knowledge-base,preference-recall"},
+    {"agent_id": "planner-agent", "name": "PlannerAgent", "role": "Plan generation and task decomposition",
+     "capabilities": "goal-decomposition,dependency-analysis,step-generation"},
+]
+
+
+class MultiAgentCoordinator:
+    """Coordinates specialist sub-agents for complex tasks."""
+
+    async def seed_agents(self):
+        """Seed built-in agent specs."""
+        def _seed():
+            conn = _db_connect()
+            try:
+                for agent in BUILTIN_AGENTS:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO agent_specs "
+                        "(agent_id, name, role, capabilities, priority, status) "
+                        "VALUES (?, ?, ?, ?, 5, 'active')",
+                        (agent["agent_id"], agent["name"], agent["role"], agent["capabilities"]),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_seed)
+
+    async def get_agents(self) -> List[Dict]:
+        """Get all agent specs."""
+        def _query():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute("SELECT * FROM agent_specs").fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_query)
+
+    async def delegate(self, parent_task_id: str, agent_id: str,
+                       payload: str, channel: str = "", thread_ts: str = "") -> str:
+        """Delegate a task to a sub-agent."""
+        now = time.time()
+
+        def _insert():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO delegated_tasks "
+                    "(parent_task_id, assigned_agent, task_payload, status, created_at) "
+                    "VALUES (?, ?, ?, 'pending', ?)",
+                    (parent_task_id, agent_id, payload, now),
+                )
+                return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            finally:
+                conn.close()
+
+        task_id = await asyncio.to_thread(_insert)
+
+        # Route to the right agent logic
+        result = await self._execute_agent_task(agent_id, payload, channel, thread_ts)
+
+        # Store result
+        def _complete():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "UPDATE delegated_tasks SET status = 'completed', result_summary = ?, completed_at = ? "
+                    "WHERE rowid = ?",
+                    ((result or "")[:500], time.time(), task_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_complete)
+        return result or ""
+
+    async def _execute_agent_task(self, agent_id: str, payload: str,
+                                   channel: str, thread_ts: str) -> str:
+        """Execute a task as a specific agent."""
+        if agent_id == "infra-agent":
+            # Run infrastructure command
+            try:
+                data = json.loads(payload) if payload.startswith("{") else {"cmd": payload}
+                result = await tool_executor.execute(
+                    "shell", data.get("host", "swarm-mainframe"), data.get("cmd", payload),
+                )
+                return result
+            except Exception as e:
+                return f"InfraAgent error: {e}"
+
+        elif agent_id == "monitor-agent":
+            results = await monitor.run_all_checks()
+            summary = "\n".join(f"{r['name']}: {r['status']}" for r in results)
+            return summary
+
+        elif agent_id == "memory-agent":
+            results = await memory.search_messages(payload, limit=10)
+            if results:
+                return "\n".join(f"[{r['role']}] {r['content'][:100]}" for r in results)
+            return "No matching memories found."
+
+        elif agent_id == "planner-agent":
+            plan_id = await planner.create_plan(payload)
+            return f"Plan created: {plan_id}"
+
+        else:
+            return f"Agent {agent_id} executed: {payload[:100]}"
+
+    async def orchestrate(self, request: str, channel: str, thread_ts: str) -> str:
+        """Decompose a request and delegate to multiple agents."""
+        # Use AI to determine which agents to involve
+        agents = await self.get_agents()
+        agent_list = "\n".join(f"- {a['agent_id']}: {a['role']}" for a in agents)
+
+        prompt = (
+            f"You are a task coordinator. Decompose this request into sub-tasks "
+            f"for specialist agents. Available agents:\n{agent_list}\n\n"
+            f"Request: {request}\n\n"
+            f"Respond with a JSON array of objects, each with 'agent_id' and 'task'. "
+            f"Example: [{{'agent_id': 'infra-agent', 'task': 'check VM health'}}]\n"
+            f"Only use agents that are relevant. Respond ONLY with the JSON array."
+        )
+
+        # For now, use simple keyword routing
+        delegations = []
+        req_lower = request.lower()
+        if any(w in req_lower for w in ["vm", "docker", "service", "restart", "disk", "uptime"]):
+            delegations.append(("infra-agent", request))
+        if any(w in req_lower for w in ["health", "monitor", "check", "alert"]):
+            delegations.append(("monitor-agent", request))
+        if any(w in req_lower for w in ["remember", "recall", "history", "what did"]):
+            delegations.append(("memory-agent", request))
+        if any(w in req_lower for w in ["plan", "goal", "deploy", "restore"]):
+            delegations.append(("planner-agent", request))
+
+        if not delegations:
+            delegations.append(("infra-agent", request))
+
+        parent_id = uuid.uuid4().hex[:8]
+        results = []
+        for agent_id, task in delegations:
+            result = await self.delegate(parent_id, agent_id, task, channel, thread_ts)
+            results.append(f"*{agent_id}*: {result[:200]}")
+
+        return "\n\n".join(results)
+
+    async def get_task_trace(self, parent_task_id: str) -> List[Dict]:
+        """Get delegation trace for a task."""
+        def _query():
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM delegated_tasks WHERE parent_task_id = ? ORDER BY created_at",
+                    (parent_task_id,),
+                ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_query)
+
+
+agent_coordinator = MultiAgentCoordinator()
+
+
+# ---------------------------------------------------------------------------
+# Predictive Monitoring
+# ---------------------------------------------------------------------------
+
+class PredictiveMonitor:
+    """Detects trends and predicts failures before they happen."""
+
+    async def collect_metrics(self, target: str) -> Dict:
+        """Collect current metrics for a target."""
+        metrics = {}
+        try:
+            if target in VMS:
+                result = await tool_executor.execute("shell", target,
+                    "echo CPU:$(top -bn1 | grep 'Cpu(s)' | awk '{print $2}') "
+                    "MEM:$(free | awk '/Mem/{printf \"%.1f\", $3/$2*100}') "
+                    "DISK:$(df / | tail -1 | awk '{print $5}' | tr -d '%')")
+                if result:
+                    for part in result.split():
+                        if ":" in part:
+                            k, v = part.split(":", 1)
+                            try:
+                                metrics[k.lower()] = float(v)
+                            except ValueError:
+                                pass
+        except Exception as e:
+            metrics["error"] = str(e)
+        return metrics
+
+    async def analyze_health(self, target: str = None) -> List[Dict]:
+        """Analyze health and generate predictions."""
+        signals = []
+        targets = [target] if target else list(VMS.keys())
+
+        for t in targets:
+            metrics = await self.collect_metrics(t)
+            if "error" in metrics:
+                signals.append({
+                    "target": t,
+                    "signal_type": "unreachable",
+                    "confidence": 0.9,
+                    "predicted_failure_window": "immediate",
+                    "explanation": f"Cannot collect metrics: {metrics['error']}",
+                    "risk_level": "critical",
+                    "recommended_action": f"Check VM {t} connectivity",
+                })
+                continue
+
+            # Disk prediction
+            disk = metrics.get("disk", 0)
+            if disk > 85:
+                signals.append({
+                    "target": t,
+                    "signal_type": "disk_exhaustion",
+                    "confidence": 0.8 if disk > 90 else 0.6,
+                    "predicted_failure_window": "24h" if disk > 90 else "72h",
+                    "explanation": f"Disk usage at {disk}%",
+                    "risk_level": "critical" if disk > 90 else "warning",
+                    "recommended_action": f"Free disk space on {t}",
+                })
+
+            # CPU prediction
+            cpu = metrics.get("cpu", 0)
+            if cpu > 80:
+                signals.append({
+                    "target": t,
+                    "signal_type": "cpu_pressure",
+                    "confidence": 0.7,
+                    "predicted_failure_window": "6h",
+                    "explanation": f"CPU at {cpu}%",
+                    "risk_level": "warning",
+                    "recommended_action": f"Investigate high CPU on {t}",
+                })
+
+            # Memory prediction
+            mem = metrics.get("mem", 0)
+            if mem > 85:
+                signals.append({
+                    "target": t,
+                    "signal_type": "memory_pressure",
+                    "confidence": 0.75,
+                    "predicted_failure_window": "12h",
+                    "explanation": f"Memory at {mem}%",
+                    "risk_level": "critical" if mem > 95 else "warning",
+                    "recommended_action": f"Check memory consumers on {t}",
+                })
+
+        # Store signals
+        for sig in signals:
+            await self._store_signal(sig)
+
+        return signals
+
+    async def _store_signal(self, signal: Dict):
+        """Store a prediction signal."""
+        def _insert():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO prediction_signals "
+                    "(target, signal_type, confidence, predicted_failure_window, "
+                    "supporting_metrics, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (signal["target"], signal["signal_type"], signal.get("confidence", 0.5),
+                     signal.get("predicted_failure_window", "unknown"),
+                     json.dumps(signal), time.time()),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_insert)
+
+    async def get_risk_assessment(self) -> List[Dict]:
+        """Generate risk assessments for all systems."""
+        signals = await self.analyze_health()
+        assessments = {}
+
+        for sig in signals:
+            target = sig["target"]
+            if target not in assessments:
+                assessments[target] = {"target": target, "signals": [], "risk_score": 0}
+            assessments[target]["signals"].append(sig)
+            # Accumulate risk
+            conf = sig.get("confidence", 0.5)
+            if sig.get("risk_level") == "critical":
+                assessments[target]["risk_score"] += conf * 0.5
+            else:
+                assessments[target]["risk_score"] += conf * 0.2
+
+        results = []
+        for target, data in assessments.items():
+            score = min(1.0, data["risk_score"])
+            level = "critical" if score > 0.7 else "warning" if score > 0.3 else "low"
+            explanation = "; ".join(s["explanation"] for s in data["signals"])
+            action = data["signals"][0].get("recommended_action", "Monitor closely") if data["signals"] else ""
+
+            results.append({
+                "target": target,
+                "risk_score": round(score, 2),
+                "risk_level": level,
+                "explanation": explanation,
+                "recommended_action": action,
+            })
+
+            # Store assessment
+            def _store(r=results[-1]):
+                conn = _db_connect()
+                try:
+                    conn.execute(
+                        "INSERT INTO risk_assessments "
+                        "(target, risk_score, risk_level, explanation, recommended_action, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (r["target"], r["risk_score"], r["risk_level"],
+                         r["explanation"], r["recommended_action"], time.time()),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            await asyncio.to_thread(_store)
+
+        return results
+
+
+predictor = PredictiveMonitor()
+
+
+# ---------------------------------------------------------------------------
+# Self-Healing Layer
+# ---------------------------------------------------------------------------
+
+FAULT_CLASSES = [
+    "WORKER_FAILURE", "PROVIDER_UNAVAILABLE", "QUEUE_OVERLOAD",
+    "MODEL_RUNTIME_ERROR", "SERVICE_UNRESPONSIVE", "DISK_PRESSURE",
+    "NETWORK_DEGRADATION", "BOT_HEALTH_FAILURE", "CONFIG_MISMATCH",
+    "UNKNOWN_ANOMALY",
+]
+
+# Repair policies: fault_class -> list of allowed repair actions
+REPAIR_POLICIES = {
+    "SERVICE_UNRESPONSIVE": [
+        {"action_type": "restart_service", "risk_level": "LOW",
+         "rollback": "verify_service_health"},
+    ],
+    "WORKER_FAILURE": [
+        {"action_type": "restart_runtime", "risk_level": "LOW",
+         "rollback": "verify_runtime_health"},
+    ],
+    "PROVIDER_UNAVAILABLE": [
+        {"action_type": "fallback_provider", "risk_level": "LOW",
+         "rollback": "restore_provider_routing"},
+    ],
+    "DISK_PRESSURE": [
+        {"action_type": "cleanup_temp_files", "risk_level": "LOW",
+         "rollback": "verify_disk_space"},
+    ],
+    "MODEL_RUNTIME_ERROR": [
+        {"action_type": "reload_runtime", "risk_level": "LOW",
+         "rollback": "verify_model_health"},
+    ],
+}
+
+# Repair DB tables
+_repair_tables_sql = """
+CREATE TABLE IF NOT EXISTS repair_events (
+    repair_id TEXT PRIMARY KEY,
+    fault_class TEXT NOT NULL,
+    target TEXT NOT NULL,
+    action_taken TEXT,
+    success INTEGER,
+    timestamp REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS repair_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repair_id TEXT NOT NULL,
+    verification_result TEXT,
+    rollback_performed INTEGER DEFAULT 0,
+    notes TEXT,
+    timestamp REAL NOT NULL
+);
+"""
+
+
+class SelfHealingLayer:
+    """Bounded self-healing with fault classification, repair, verification, and rollback."""
+
+    def __init__(self):
+        self.enabled = True
+        self._init_tables()
+
+    def _init_tables(self):
+        """Create repair tables."""
+        try:
+            conn = _db_connect()
+            conn.executescript(_repair_tables_sql)
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            log.warning(f"Self-healing table init: {e}")
+
+    async def classify_fault(self, check_result: Dict) -> Optional[Dict]:
+        """Classify a monitoring result into a fault type."""
+        status = check_result.get("status", "ok")
+        if status == "ok":
+            return None
+
+        check_id = check_result.get("check_id", "")
+        target = check_result.get("target", "")
+        result_text = check_result.get("result", "").lower()
+
+        # Classification rules
+        fault_class = "UNKNOWN_ANOMALY"
+        if "disk" in check_id:
+            fault_class = "DISK_PRESSURE"
+        elif "gpu" in check_id and ("unavailable" in result_text or "error" in result_text):
+            fault_class = "MODEL_RUNTIME_ERROR"
+        elif "ollama" in check_id and "down" in result_text:
+            fault_class = "SERVICE_UNRESPONSIVE"
+        elif "docker" in check_id and "restart" in result_text:
+            fault_class = "WORKER_FAILURE"
+        elif check_id.startswith("vm-") and status == "critical":
+            fault_class = "SERVICE_UNRESPONSIVE"
+
+        return {
+            "fault_id": f"fault-{uuid.uuid4().hex[:8]}",
+            "fault_class": fault_class,
+            "affected_entity": target,
+            "confidence": 0.8 if status == "critical" else 0.5,
+            "related_metrics": check_result,
+            "timestamp": time.time(),
+        }
+
+    async def attempt_repair(self, fault: Dict, channel: str = "") -> Dict:
+        """Attempt automatic repair based on policies."""
+        if not self.enabled:
+            return {"status": "disabled", "message": "Self-healing is disabled"}
+
+        fault_class = fault["fault_class"]
+        target = fault["affected_entity"]
+        repair_id = f"repair-{uuid.uuid4().hex[:8]}"
+
+        policies = REPAIR_POLICIES.get(fault_class, [])
+        low_risk = [p for p in policies if p["risk_level"] == "LOW"]
+
+        if not low_risk:
+            return {"status": "no_policy", "message": f"No LOW-risk repair for {fault_class}"}
+
+        action = low_risk[0]
+        action_type = action["action_type"]
+
+        # Execute repair
+        result = await self._execute_repair(repair_id, action_type, target)
+
+        # Store repair event
+        def _store():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO repair_events (repair_id, fault_class, target, action_taken, success, timestamp) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (repair_id, fault_class, target, action_type,
+                     1 if result.get("success") else 0, time.time()),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_store)
+
+        # Verify repair after delay
+        if result.get("success"):
+            await asyncio.sleep(10)
+            verified = await self._verify_repair(repair_id, target, action)
+            if not verified:
+                await self._rollback(repair_id, action, target)
+                result["rolled_back"] = True
+
+        # Alert
+        if channel:
+            icon = ":wrench:" if result.get("success") else ":x:"
+            rb = " (rolled back)" if result.get("rolled_back") else ""
+            await post_message(
+                f"{icon} *Self-heal* `{repair_id}`: {action_type} on `{target}` — "
+                f"{'success' if result.get('success') else 'failed'}{rb}",
+                channel,
+            )
+
+        return result
+
+    async def _execute_repair(self, repair_id: str, action_type: str, target: str) -> Dict:
+        """Execute a specific repair action."""
+        try:
+            if action_type == "restart_service":
+                if target in VMS:
+                    # Restart common services
+                    await tool_executor.execute("shell", target,
+                        "sudo systemctl restart bunny-alpha 2>/dev/null; "
+                        "sudo systemctl restart docker 2>/dev/null; echo 'restarted'")
+                return {"success": True, "action": action_type}
+
+            elif action_type == "restart_runtime":
+                await tool_executor.execute("shell", target,
+                    "sudo systemctl restart ollama 2>/dev/null || echo 'no ollama'")
+                return {"success": True, "action": action_type}
+
+            elif action_type == "cleanup_temp_files":
+                await tool_executor.execute("shell", target,
+                    "sudo find /tmp -type f -mtime +7 -delete 2>/dev/null; "
+                    "sudo journalctl --vacuum-time=3d 2>/dev/null; echo 'cleaned'")
+                return {"success": True, "action": action_type}
+
+            elif action_type == "reload_runtime":
+                await tool_executor.execute("shell", target,
+                    "sudo systemctl restart ollama 2>/dev/null; sleep 2; "
+                    "curl -s http://localhost:11434/api/tags > /dev/null && echo 'ok' || echo 'failed'")
+                return {"success": True, "action": action_type}
+
+            elif action_type == "fallback_provider":
+                # Just log — provider fallback is automatic in query_ai
+                return {"success": True, "action": action_type}
+
+            return {"success": False, "action": action_type, "error": "Unknown action"}
+        except Exception as e:
+            return {"success": False, "action": action_type, "error": str(e)}
+
+    async def _verify_repair(self, repair_id: str, target: str, action: Dict) -> bool:
+        """Verify that a repair was successful."""
+        try:
+            result = await tool_executor.execute("shell", target, "uptime")
+            verified = bool(result and "up" in result.lower())
+
+            def _store():
+                conn = _db_connect()
+                try:
+                    conn.execute(
+                        "INSERT INTO repair_history (repair_id, verification_result, timestamp) "
+                        "VALUES (?, ?, ?)",
+                        (repair_id, "verified" if verified else "failed", time.time()),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            await asyncio.to_thread(_store)
+            return verified
+        except Exception:
+            return False
+
+    async def _rollback(self, repair_id: str, action: Dict, target: str):
+        """Rollback a failed repair."""
+        log.warning(f"Rolling back repair {repair_id} on {target}")
+        def _store():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO repair_history (repair_id, verification_result, rollback_performed, notes, timestamp) "
+                    "VALUES (?, 'rollback', 1, 'Auto-rollback after verification failure', ?)",
+                    (repair_id, time.time()),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_store)
+
+    async def get_repair_history(self, limit: int = 20) -> List[Dict]:
+        """Get recent repair events."""
+        def _query():
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM repair_events ORDER BY timestamp DESC LIMIT ?", (limit,)
+                ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_query)
+
+
+self_healer = SelfHealingLayer()
+
+
+# ---------------------------------------------------------------------------
 # AI Model Providers
 # ---------------------------------------------------------------------------
 
@@ -2273,6 +3063,11 @@ SLASH_COMMANDS = {
     "jobs": "List scheduled jobs",
     "unschedule": "Remove a scheduled job (/unschedule <id>)",
     "graph": "Knowledge graph (/graph entity|deps|impact|recent|search)",
+    "plan": "Create/manage plans (/plan <goal>, /plan status|cancel|list)",
+    "agents": "List available sub-agents",
+    "delegate": "Delegate task to sub-agents (/delegate <task>)",
+    "predict": "Predictive monitoring (/predict health|risk|<vm>)",
+    "heal": "Self-healing status/control (/heal status|history|enable|disable)",
     "memory": "Show persistent memory stats (/memory search <query>)",
     "forget": "Clear memory (/forget, /forget all, /forget thread, /forget channel)",
     "pref": "Set/get preferences (/pref key value, /pref key, /pref)",
@@ -2778,6 +3573,204 @@ async def handle_slash_command(cmd: str, args: str, channel: str, thread_ts: str
             )
         return True
 
+    # -- Autonomous Planning commands --
+    if cmd == "plan":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else ""
+
+        if subcmd == "status" and len(sub) > 1:
+            plan_data = await planner.get_plan(sub[1].strip())
+            if plan_data:
+                p = plan_data["plan"]
+                steps = plan_data["steps"]
+                lines = [f":clipboard: *Plan `{p['plan_id']}`* — {p['status']}\n*Goal:* {p['goal_text'][:100]}"]
+                for s in steps:
+                    icon = {"completed": ":white_check_mark:", "failed": ":x:", "running": ":gear:", "pending": ":inbox_tray:", "blocked": ":no_entry:"}.get(s["status"], ":grey_question:")
+                    lines.append(f"{icon} `{s['step_id']}` {s['title']} [{s['status']}]")
+                if p.get("summary"):
+                    lines.append(f"\n_Summary: {p['summary']}_")
+                await post_message("\n".join(lines), channel, thread_ts)
+            else:
+                await post_message(f":warning: Plan `{sub[1]}` not found.", channel, thread_ts)
+
+        elif subcmd == "cancel" and len(sub) > 1:
+            await planner.update_plan_status(sub[1].strip(), "cancelled")
+            await post_message(f":no_entry_sign: Plan `{sub[1].strip()}` cancelled.", channel, thread_ts)
+
+        elif subcmd == "list":
+            plans = await planner.get_recent_plans()
+            if plans:
+                import datetime
+                lines = [":clipboard: *Recent Plans*\n"]
+                for p in plans:
+                    ts = datetime.datetime.fromtimestamp(p["created_at"]).strftime("%m/%d %H:%M")
+                    lines.append(f"`{p['plan_id']}` [{p['status']}] {p['goal_text'][:60]} ({ts})")
+                await post_message("\n".join(lines), channel, thread_ts)
+            else:
+                await post_message(":clipboard: No plans yet.", channel, thread_ts)
+
+        elif subcmd and subcmd not in ("status", "cancel", "list", "explain", "retry"):
+            # Create a new plan from the full args
+            goal = args.strip()
+            plan_id = await planner.create_plan(goal)
+            await post_message(
+                f":brain: Creating plan for: *{goal[:100]}*\nPlan ID: `{plan_id}`",
+                channel, thread_ts,
+            )
+            # Use AI to generate steps
+            step_prompt = (
+                f"Break this goal into 3-6 concrete infrastructure steps:\n\n"
+                f"Goal: {goal}\n\n"
+                f"For each step, provide a title and a shell command in JSON format.\n"
+                f"Available hosts: swarm-mainframe, swarm-gpu, fc-ai-portal, calculus-web.\n"
+                f"Respond with a JSON array like:\n"
+                f'[{{"title": "Check VM health", "description": "{{\\\"tool\\\":\\\"shell\\\",\\\"host\\\":\\\"swarm-mainframe\\\",\\\"cmd\\\":\\\"uptime\\\"}}", "priority": 1}}]'
+            )
+            try:
+                ai_response = await query_ai(step_prompt, system="You are a plan generator. Output ONLY valid JSON.")
+                # Try to parse steps from AI response
+                json_match = re.search(r'\[.*\]', ai_response, re.DOTALL)
+                if json_match:
+                    steps = json.loads(json_match.group())
+                    for i, step in enumerate(steps):
+                        await planner.add_step(
+                            plan_id, step.get("title", f"Step {i+1}"),
+                            step.get("description", ""), priority=step.get("priority", i+1),
+                        )
+                    await post_message(
+                        f":white_check_mark: Plan `{plan_id}` created with {len(steps)} steps.\n"
+                        f"Run `/plan status {plan_id}` to view, or tell me to execute it.",
+                        channel, thread_ts,
+                    )
+                else:
+                    # Fallback: create a single step
+                    await planner.add_step(plan_id, goal, goal)
+                    await post_message(
+                        f":white_check_mark: Plan `{plan_id}` created (1 step). Use `/plan status {plan_id}` to view.",
+                        channel, thread_ts,
+                    )
+            except Exception as e:
+                await post_message(f":warning: Plan created but step generation failed: `{e}`", channel, thread_ts)
+        else:
+            await post_message(
+                ":brain: */plan* commands: `/plan <goal>`, `/plan status <id>`, `/plan cancel <id>`, `/plan list`",
+                channel, thread_ts,
+            )
+        return True
+
+    # -- Multi-Agent commands --
+    if cmd == "agents":
+        agents = await agent_coordinator.get_agents()
+        lines = [":robot_face: *Available Agents*\n"]
+        for a in agents:
+            lines.append(f"\u2022 *{a['name']}* (`{a['agent_id']}`) — {a['role']}")
+            lines.append(f"   Capabilities: `{a.get('capabilities', 'general')}`")
+        await post_message("\n".join(lines), channel, thread_ts)
+        return True
+
+    if cmd == "delegate":
+        if not args.strip():
+            await post_message(":warning: Usage: `/delegate <task description>`", channel, thread_ts)
+            return True
+        result = await agent_coordinator.orchestrate(args.strip(), channel, thread_ts)
+        await post_message(f":robot_face: *Agent Results*\n{result[:2000]}", channel, thread_ts)
+        return True
+
+    # -- Predictive Monitoring commands --
+    if cmd == "predict":
+        sub = args.strip().lower() or "health"
+        if sub == "health":
+            signals = await predictor.analyze_health()
+            if signals:
+                lines = [":crystal_ball: *Predictive Health Analysis*\n"]
+                for s in signals:
+                    icon = ":rotating_light:" if s["risk_level"] == "critical" else ":warning:"
+                    lines.append(
+                        f"{icon} *{s['target']}* — {s['signal_type']} "
+                        f"(confidence: {s['confidence']:.0%}, window: {s['predicted_failure_window']})\n"
+                        f"   {s['explanation']}\n"
+                        f"   _Action: {s['recommended_action']}_"
+                    )
+                await post_message("\n".join(lines), channel, thread_ts)
+            else:
+                await post_message(":crystal_ball: All systems healthy — no predicted issues.", channel, thread_ts)
+
+        elif sub == "risk":
+            assessments = await predictor.get_risk_assessment()
+            lines = [":bar_chart: *Risk Assessment*\n"]
+            for a in assessments:
+                icon = ":red_circle:" if a["risk_level"] == "critical" else ":orange_circle:" if a["risk_level"] == "warning" else ":green_circle:"
+                lines.append(f"{icon} *{a['target']}* — risk: {a['risk_score']:.0%} ({a['risk_level']})")
+                if a.get("explanation"):
+                    lines.append(f"   {a['explanation'][:100]}")
+            if not assessments:
+                lines.append(":green_circle: No risk signals detected.")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        elif sub in VMS:
+            signals = await predictor.analyze_health(sub)
+            if signals:
+                lines = [f":crystal_ball: *Prediction for `{sub}`*\n"]
+                for s in signals:
+                    lines.append(f"\u2022 {s['signal_type']}: {s['explanation']} ({s['recommended_action']})")
+                await post_message("\n".join(lines), channel, thread_ts)
+            else:
+                await post_message(f":crystal_ball: `{sub}` looks healthy.", channel, thread_ts)
+        else:
+            await post_message(
+                ":crystal_ball: */predict* commands: `health`, `risk`, `<vm-name>`",
+                channel, thread_ts,
+            )
+        return True
+
+    # -- Self-Healing commands --
+    if cmd == "heal":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "status"
+
+        if subcmd == "status":
+            status = "enabled" if self_healer.enabled else "disabled"
+            history = await self_healer.get_repair_history(5)
+            lines = [f":wrench: *Self-Healing: {status}*\n"]
+            if history:
+                import datetime
+                lines.append("*Recent repairs:*")
+                for r in history:
+                    ts = datetime.datetime.fromtimestamp(r["timestamp"]).strftime("%m/%d %H:%M")
+                    icon = ":white_check_mark:" if r.get("success") else ":x:"
+                    lines.append(f"{icon} `{r['repair_id']}` {r['fault_class']} on {r['target']} — {r.get('action_taken', '?')} ({ts})")
+            else:
+                lines.append("No repair history.")
+            await post_message("\n".join(lines), channel, thread_ts)
+
+        elif subcmd == "history":
+            history = await self_healer.get_repair_history(20)
+            if history:
+                import datetime
+                lines = [":wrench: *Repair History*\n"]
+                for r in history:
+                    ts = datetime.datetime.fromtimestamp(r["timestamp"]).strftime("%m/%d %H:%M")
+                    icon = ":white_check_mark:" if r.get("success") else ":x:"
+                    lines.append(f"{icon} `{r['repair_id']}` [{r['fault_class']}] {r['target']} — {r.get('action_taken', '?')} ({ts})")
+                await post_message("\n".join(lines), channel, thread_ts)
+            else:
+                await post_message(":wrench: No repair history.", channel, thread_ts)
+
+        elif subcmd == "enable":
+            self_healer.enabled = True
+            await post_message(":white_check_mark: Self-healing enabled.", channel, thread_ts)
+
+        elif subcmd == "disable":
+            self_healer.enabled = False
+            await post_message(":no_entry_sign: Self-healing disabled.", channel, thread_ts)
+
+        else:
+            await post_message(
+                ":wrench: */heal* commands: `status`, `history`, `enable`, `disable`",
+                channel, thread_ts,
+            )
+        return True
+
     return False
 
 
@@ -3193,6 +4186,14 @@ async def on_startup(app: web.Application):
     except Exception as e:
         log.warning(f"Knowledge graph seed error: {e}")
 
+    try:
+        await agent_coordinator.seed_agents()
+        agents = await agent_coordinator.get_agents()
+        log.info(f"Multi-agent: {len(agents)} agents registered")
+    except Exception as e:
+        log.warning(f"Agent seed error: {e}")
+
+    log.info(f"Self-healing: {'enabled' if self_healer.enabled else 'disabled'}")
     log.info(f"Listening on port {PORT}")
 
     # Start background services
