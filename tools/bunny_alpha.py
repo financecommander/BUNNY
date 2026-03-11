@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bunny Alpha v3.0 — Autonomous Operations Platform
+Bunny Alpha v3.1 — Autonomous Operations Platform
 
 Standalone Slack assistant with real infrastructure execution.
 Task queue, concurrent execution, progress reporting.
@@ -917,6 +917,67 @@ def _init_db():
                 execution_status TEXT DEFAULT 'pending',
                 executed_at REAL
             );
+
+            -- ===== STRUCTURED EXECUTION & SAFETY BOUNDARY LAYER =====
+
+            -- Execution Actions (all infra operations become structured actions)
+            CREATE TABLE IF NOT EXISTS execution_actions (
+                action_id TEXT PRIMARY KEY,
+                action_type TEXT NOT NULL,
+                parameters_json TEXT,
+                requested_by TEXT DEFAULT 'system',
+                session_id TEXT,
+                risk_level TEXT DEFAULT 'READ_ONLY',
+                approval_required INTEGER DEFAULT 0,
+                approval_id TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at REAL NOT NULL,
+                resolved_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_exec_actions_status ON execution_actions(status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_exec_actions_type ON execution_actions(action_type, created_at);
+
+            -- Execution Results (output of each action)
+            CREATE TABLE IF NOT EXISTS execution_results (
+                result_id TEXT PRIMARY KEY,
+                action_id TEXT NOT NULL,
+                execution_host TEXT,
+                command_executed TEXT,
+                stdout TEXT,
+                stderr TEXT,
+                exit_code INTEGER,
+                success INTEGER DEFAULT 1,
+                duration_ms REAL,
+                timestamp REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_exec_results ON execution_results(action_id);
+
+            -- Action Policies (per-action-type rules)
+            CREATE TABLE IF NOT EXISTS action_policies (
+                policy_id TEXT PRIMARY KEY,
+                action_type TEXT NOT NULL UNIQUE,
+                risk_level TEXT DEFAULT 'SAFE_MUTATION',
+                requires_approval INTEGER DEFAULT 0,
+                allowed_roles TEXT DEFAULT 'OPERATOR,ADMIN,SYSTEM',
+                timeout_seconds INTEGER DEFAULT 60,
+                adapter TEXT DEFAULT 'host',
+                description TEXT,
+                updated_at REAL NOT NULL
+            );
+
+            -- Audit Actions (structured action audit trail)
+            CREATE TABLE IF NOT EXISTS audit_actions (
+                audit_id TEXT PRIMARY KEY,
+                action_id TEXT NOT NULL,
+                actor_type TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                parameters_json TEXT,
+                result TEXT,
+                risk_level TEXT,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_audit_actions ON audit_actions(action_type, created_at);
         """)
         conn.commit()
         log.info(f"Persistent memory initialized: {DB_PATH}")
@@ -5559,6 +5620,528 @@ auto_ops = AutonomousOps()
 
 
 # ---------------------------------------------------------------------------
+# Structured Execution & Safety Boundary Layer
+# ---------------------------------------------------------------------------
+
+# Action Primitive Catalog — maps action_type to adapter + risk + description
+ACTION_CATALOG = {
+    # Docker Adapter
+    "restart_container":   {"adapter": "docker", "risk": "SAFE_MUTATION",   "cmd_tpl": "docker restart {name}"},
+    "start_container":     {"adapter": "docker", "risk": "SAFE_MUTATION",   "cmd_tpl": "docker start {name}"},
+    "stop_container":      {"adapter": "docker", "risk": "RISKY_MUTATION",  "cmd_tpl": "docker stop {name}"},
+    "container_logs":      {"adapter": "docker", "risk": "READ_ONLY",       "cmd_tpl": "docker logs --tail 50 {name}"},
+    "deploy_container":    {"adapter": "docker", "risk": "RISKY_MUTATION",  "cmd_tpl": "docker compose up -d {name}"},
+    "container_status":    {"adapter": "docker", "risk": "READ_ONLY",       "cmd_tpl": "docker ps --format '{{{{.Names}}}}: {{{{.Status}}}}'"},
+    # Git Adapter
+    "clone_repo":          {"adapter": "git", "risk": "SAFE_MUTATION",   "cmd_tpl": "git clone {url} {dest}"},
+    "create_branch":       {"adapter": "git", "risk": "SAFE_MUTATION",   "cmd_tpl": "cd {repo} && git checkout -b {branch}"},
+    "commit_changes":      {"adapter": "git", "risk": "SAFE_MUTATION",   "cmd_tpl": "cd {repo} && git add -A && git commit -m '{message}'"},
+    "push_changes":        {"adapter": "git", "risk": "RISKY_MUTATION",  "cmd_tpl": "cd {repo} && git push"},
+    "git_status":          {"adapter": "git", "risk": "READ_ONLY",       "cmd_tpl": "cd {repo} && git status --short"},
+    "git_log":             {"adapter": "git", "risk": "READ_ONLY",       "cmd_tpl": "cd {repo} && git log --oneline -n {count}"},
+    "git_pull":            {"adapter": "git", "risk": "SAFE_MUTATION",   "cmd_tpl": "cd {repo} && git pull"},
+    "run_build":           {"adapter": "git", "risk": "SAFE_MUTATION",   "cmd_tpl": "cd {repo} && {build_cmd}"},
+    "run_tests":           {"adapter": "git", "risk": "SAFE_MUTATION",   "cmd_tpl": "cd {repo} && {test_cmd}"},
+    # Host Adapter
+    "restart_service":     {"adapter": "host", "risk": "SAFE_MUTATION",   "cmd_tpl": "sudo systemctl restart {service}"},
+    "inspect_host":        {"adapter": "host", "risk": "READ_ONLY",       "cmd_tpl": "uptime && free -h && df -h /"},
+    "fetch_logs":          {"adapter": "host", "risk": "READ_ONLY",       "cmd_tpl": "sudo journalctl -u {service} -n {lines} --no-pager"},
+    "read_file":           {"adapter": "host", "risk": "READ_ONLY",       "cmd_tpl": "head -100 '{path}'"},
+    "write_file":          {"adapter": "host", "risk": "RISKY_MUTATION",  "cmd_tpl": "echo '{content}' > '{path}'"},
+    "restart_worker":      {"adapter": "host", "risk": "SAFE_MUTATION",   "cmd_tpl": "sudo systemctl restart {worker}"},
+    "cleanup_temp":        {"adapter": "host", "risk": "SAFE_MUTATION",   "cmd_tpl": "sudo find /tmp -type f -mtime +7 -delete 2>/dev/null; echo done"},
+    "update_config":       {"adapter": "host", "risk": "RISKY_MUTATION",  "cmd_tpl": "echo 'config updated'"},
+    "check_disk":          {"adapter": "host", "risk": "READ_ONLY",       "cmd_tpl": "df -h /"},
+    "check_memory":        {"adapter": "host", "risk": "READ_ONLY",       "cmd_tpl": "free -h"},
+    "check_processes":     {"adapter": "host", "risk": "READ_ONLY",       "cmd_tpl": "ps aux --sort=-%mem | head -15"},
+    # Provider Adapter
+    "reroute_provider":    {"adapter": "provider", "risk": "RISKY_MUTATION", "cmd_tpl": "reroute"},
+    "check_provider":      {"adapter": "provider", "risk": "READ_ONLY",     "cmd_tpl": "check"},
+    "switch_model":        {"adapter": "provider", "risk": "SAFE_MUTATION",  "cmd_tpl": "switch"},
+    # System
+    "shell_raw":           {"adapter": "raw_shell", "risk": "RISKY_MUTATION", "cmd_tpl": "{cmd}"},
+    "delete_resources":    {"adapter": "host", "risk": "DESTRUCTIVE",    "cmd_tpl": "rm -rf {path}"},
+}
+
+# Risk auto-resolution thresholds
+RISK_POLICY = {
+    "READ_ONLY": {"auto_execute": True, "notify": False, "approval": False},
+    "SAFE_MUTATION": {"auto_execute": True, "notify": False, "approval": False},
+    "RISKY_MUTATION": {"auto_execute": False, "notify": True, "approval": True},
+    "DESTRUCTIVE": {"auto_execute": False, "notify": True, "approval": True},
+}
+
+# Dangerous command patterns (blocked entirely outside admin/emergency)
+BLOCKED_PATTERNS = [
+    "rm -rf /", "mkfs", "dd if=", "fdisk", "> /dev/sda",
+    ":(){ :|:& };:", "chmod -R 777 /", "mv /* ",
+]
+
+
+class InfrastructureAdapter:
+    """Base infrastructure adapter — translates actions into commands."""
+
+    async def execute(self, action_type: str, params: Dict,
+                       host: str = "swarm-mainframe") -> Dict:
+        """Execute an infrastructure action and return structured result."""
+        catalog_entry = ACTION_CATALOG.get(action_type)
+        if not catalog_entry:
+            return {"success": False, "error": f"Unknown action: {action_type}"}
+
+        adapter = catalog_entry["adapter"]
+        cmd_tpl = catalog_entry["cmd_tpl"]
+
+        # Build the actual command from template + params
+        try:
+            cmd = cmd_tpl.format(**params) if params else cmd_tpl
+        except KeyError as e:
+            return {"success": False, "error": f"Missing parameter: {e}"}
+
+        # Input sanitization — block dangerous patterns
+        for pattern in BLOCKED_PATTERNS:
+            if pattern in cmd:
+                return {"success": False, "error": f"Blocked: dangerous command pattern '{pattern}'"}
+
+        # Route to the correct adapter
+        start_time = time.time()
+        try:
+            if adapter in ("host", "docker", "git", "raw_shell"):
+                result = await tool_executor.exec_shell(host, cmd)
+            elif adapter == "provider":
+                result = await self._provider_action(action_type, params)
+            else:
+                result = await tool_executor.exec_shell(host, cmd)
+
+            duration = (time.time() - start_time) * 1000
+            success = not result.startswith("[ERROR]") and not result.startswith("[exit")
+
+            return {
+                "success": success,
+                "stdout": result if success else "",
+                "stderr": result if not success else "",
+                "command": cmd,
+                "host": host,
+                "duration_ms": round(duration, 1),
+                "exit_code": 0 if success else 1,
+            }
+        except Exception as e:
+            duration = (time.time() - start_time) * 1000
+            return {
+                "success": False,
+                "stdout": "",
+                "stderr": str(e),
+                "command": cmd,
+                "host": host,
+                "duration_ms": round(duration, 1),
+                "exit_code": -1,
+            }
+
+    async def _provider_action(self, action_type: str, params: Dict) -> str:
+        """Handle provider-level actions (no shell command)."""
+        if action_type == "reroute_provider":
+            target = params.get("provider", "deepseek")
+            global _active_provider, _active_model
+            _active_provider = target
+            _active_model = params.get("model", f"{target}-chat")
+            return f"Rerouted to {target}/{_active_model}"
+        elif action_type == "check_provider":
+            return f"Active: {_active_provider}/{_active_model}"
+        elif action_type == "switch_model":
+            target = params.get("model", "deepseek-chat")
+            provider = params.get("provider", "deepseek")
+            _active_provider = provider
+            _active_model = target
+            return f"Switched to {provider}/{target}"
+        return "Unknown provider action"
+
+
+infra_adapter = InfrastructureAdapter()
+
+
+class ActionExecutionService:
+    """Centralized execution service — all actions pass through here.
+
+    Flow: Action Request → Policy Validation → Approval Check →
+          Infrastructure Adapter → Result Capture → Audit Record
+    """
+
+    def __init__(self):
+        self._emergency_mode = False  # Bypasses approval gates
+
+    async def seed_policies(self):
+        """Seed default action policies from the catalog."""
+        def _seed():
+            conn = _db_connect()
+            try:
+                now = time.time()
+                for action_type, entry in ACTION_CATALOG.items():
+                    risk = entry["risk"]
+                    needs_approval = 1 if risk in ("RISKY_MUTATION", "DESTRUCTIVE") else 0
+                    conn.execute(
+                        "INSERT OR IGNORE INTO action_policies "
+                        "(policy_id, action_type, risk_level, requires_approval, "
+                        "adapter, description, updated_at) VALUES (?,?,?,?,?,?,?)",
+                        (f"apol-{action_type}", action_type, risk, needs_approval,
+                         entry["adapter"], entry.get("cmd_tpl", ""), now))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_seed)
+
+    def classify_risk(self, action_type: str) -> str:
+        """Get risk level for an action type."""
+        entry = ACTION_CATALOG.get(action_type, {})
+        return entry.get("risk", "RISKY_MUTATION")
+
+    def classify_shell_command(self, cmd: str) -> Tuple[str, str]:
+        """Classify a raw shell command into an action type and risk level.
+
+        Converts arbitrary shell commands into the closest action primitive.
+        """
+        cmd_lower = cmd.lower().strip()
+
+        # Check for blocked patterns first
+        for pattern in BLOCKED_PATTERNS:
+            if pattern in cmd:
+                return "shell_raw", "DESTRUCTIVE"
+
+        # Classify by command content
+        if any(cmd_lower.startswith(p) for p in ["cat ", "head ", "tail ", "less ", "more "]):
+            return "read_file", "READ_ONLY"
+        if any(cmd_lower.startswith(p) for p in ["ls ", "find ", "df ", "free ", "uptime",
+                                                   "ps ", "top ", "whoami", "date", "uname",
+                                                   "wc ", "file ", "stat ", "du ", "hostname"]):
+            return "inspect_host", "READ_ONLY"
+        if cmd_lower.startswith("docker ps") or cmd_lower.startswith("docker images"):
+            return "container_status", "READ_ONLY"
+        if cmd_lower.startswith("docker logs"):
+            return "container_logs", "READ_ONLY"
+        if cmd_lower.startswith("docker restart"):
+            return "restart_container", "SAFE_MUTATION"
+        if cmd_lower.startswith("docker stop"):
+            return "stop_container", "RISKY_MUTATION"
+        if cmd_lower.startswith("docker start"):
+            return "start_container", "SAFE_MUTATION"
+        if cmd_lower.startswith("docker compose"):
+            return "deploy_container", "RISKY_MUTATION"
+        if cmd_lower.startswith("git status") or cmd_lower.startswith("git log"):
+            return "git_status", "READ_ONLY"
+        if cmd_lower.startswith("git pull"):
+            return "git_pull", "SAFE_MUTATION"
+        if cmd_lower.startswith("git push"):
+            return "push_changes", "RISKY_MUTATION"
+        if cmd_lower.startswith("git clone"):
+            return "clone_repo", "SAFE_MUTATION"
+        if "git commit" in cmd_lower:
+            return "commit_changes", "SAFE_MUTATION"
+        if cmd_lower.startswith("sudo systemctl restart"):
+            return "restart_service", "SAFE_MUTATION"
+        if cmd_lower.startswith("journalctl"):
+            return "fetch_logs", "READ_ONLY"
+        if any(cmd_lower.startswith(p) for p in ["grep ", "awk ", "sed ", "curl -s", "wget -q"]):
+            return "inspect_host", "READ_ONLY"
+        if any(cmd_lower.startswith(p) for p in ["nvidia-smi", "nvtop"]):
+            return "inspect_host", "READ_ONLY"
+        if any(w in cmd_lower for w in ["rm ", "rmdir", "unlink"]):
+            if "rm -rf /" in cmd_lower:
+                return "delete_resources", "DESTRUCTIVE"
+            return "delete_resources", "RISKY_MUTATION"
+        if any(w in cmd_lower for w in ["tee ", "> ", ">> ", "echo "]) and ">" in cmd:
+            return "write_file", "RISKY_MUTATION"
+        if cmd_lower.startswith("timeout "):
+            # Sandboxed code execution
+            return "shell_raw", "SAFE_MUTATION"
+
+        # Default: treat unknown shell commands as SAFE_MUTATION
+        # (not READ_ONLY since we can't be sure, not RISKY since most are safe)
+        return "shell_raw", "SAFE_MUTATION"
+
+    async def request_action(self, action_type: str, params: Dict = None,
+                              host: str = "swarm-mainframe",
+                              requested_by: str = "system",
+                              session_id: str = None) -> Dict:
+        """Request a structured action — validates, checks policy, executes if allowed."""
+        action_id = f"act-{uuid.uuid4().hex[:10]}"
+        risk = self.classify_risk(action_type)
+        policy = RISK_POLICY.get(risk, RISK_POLICY["RISKY_MUTATION"])
+        now = time.time()
+
+        # Create action record
+        def _create():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO execution_actions "
+                    "(action_id, action_type, parameters_json, requested_by, "
+                    "session_id, risk_level, approval_required, status, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    (action_id, action_type, json.dumps(params or {}),
+                     requested_by, session_id, risk,
+                     1 if policy["approval"] and not self._emergency_mode else 0,
+                     "pending", now))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_create)
+
+        # Check if approval is needed
+        if policy["approval"] and not self._emergency_mode:
+            # Create approval request
+            appr_id = await perm_mgr.request_approval(
+                requested_by, action_type,
+                {"host": host, **(params or {})},
+                f"Action '{action_type}' on {host} — risk={risk}")
+
+            def _update():
+                conn = _db_connect()
+                try:
+                    conn.execute(
+                        "UPDATE execution_actions SET approval_id=?, status='awaiting_approval' "
+                        "WHERE action_id=?", (appr_id, action_id))
+                    conn.commit()
+                finally:
+                    conn.close()
+            await asyncio.to_thread(_update)
+
+            # Audit
+            await self._audit_action(action_id, action_type, requested_by,
+                                      params, "awaiting_approval", risk)
+            return {
+                "action_id": action_id, "status": "awaiting_approval",
+                "approval_id": appr_id, "risk": risk,
+                "message": f"Action '{action_type}' requires approval (risk={risk})",
+            }
+
+        # Execute directly
+        return await self._execute_action(action_id, action_type, params,
+                                           host, requested_by, risk)
+
+    async def _execute_action(self, action_id: str, action_type: str,
+                               params: Dict, host: str,
+                               requested_by: str, risk: str) -> Dict:
+        """Actually execute the action through the infrastructure adapter."""
+        # Update status to running
+        def _update_running():
+            conn = _db_connect()
+            try:
+                conn.execute("UPDATE execution_actions SET status='running' WHERE action_id=?",
+                             (action_id,))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_update_running)
+
+        # Execute through adapter
+        result = await infra_adapter.execute(action_type, params or {}, host)
+
+        # Store result
+        result_id = f"res-{uuid.uuid4().hex[:8]}"
+        final_status = "completed" if result["success"] else "failed"
+
+        def _store_result():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO execution_results "
+                    "(result_id, action_id, execution_host, command_executed, "
+                    "stdout, stderr, exit_code, success, duration_ms, timestamp) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (result_id, action_id, result.get("host", host),
+                     result.get("command", ""), result.get("stdout", ""),
+                     result.get("stderr", ""), result.get("exit_code", 0),
+                     1 if result["success"] else 0,
+                     result.get("duration_ms", 0), time.time()))
+                conn.execute(
+                    "UPDATE execution_actions SET status=?, resolved_at=? WHERE action_id=?",
+                    (final_status, time.time(), action_id))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_store_result)
+
+        # Audit
+        await self._audit_action(action_id, action_type, requested_by,
+                                  params, final_status, risk)
+
+        # Record outcome for learning
+        try:
+            await outcome_learner.record_task_outcome(
+                action_id, task_type=action_type,
+                success=result["success"],
+                duration_ms=result.get("duration_ms", 0),
+                provider_used=host)
+        except Exception:
+            pass
+
+        output = result.get("stdout", "") or result.get("stderr", "")
+        return {
+            "action_id": action_id, "status": final_status,
+            "risk": risk, "output": output,
+            "success": result["success"],
+            "duration_ms": result.get("duration_ms", 0),
+            "command": result.get("command", ""),
+        }
+
+    async def execute_shell_mediated(self, host: str, cmd: str,
+                                      requested_by: str = "system") -> str:
+        """Mediated shell execution — classifies command and routes through policy.
+
+        This replaces direct tool_executor.exec_shell calls.
+        Returns the shell output string (preserving the old interface).
+        """
+        action_type, risk = self.classify_shell_command(cmd)
+
+        # For READ_ONLY and SAFE_MUTATION, execute directly
+        if risk in ("READ_ONLY", "SAFE_MUTATION"):
+            # Still record and audit, but don't require approval
+            result = await self.request_action(
+                action_type, {"cmd": cmd, "host": host},
+                host=host, requested_by=requested_by)
+            return result.get("output", "(no output)")
+
+        # For RISKY/DESTRUCTIVE, check emergency mode
+        if self._emergency_mode:
+            result = await self.request_action(
+                action_type, {"cmd": cmd, "host": host},
+                host=host, requested_by=requested_by)
+            return result.get("output", "(no output)")
+
+        # RISKY_MUTATION — execute but log prominently
+        if risk == "RISKY_MUTATION":
+            await audit.log("risky_shell_execution", actor_id=requested_by,
+                            payload={"cmd": cmd[:200], "host": host, "risk": risk})
+            result = await self.request_action(
+                action_type, {"cmd": cmd, "host": host},
+                host=host, requested_by=requested_by)
+            if result.get("status") == "awaiting_approval":
+                return f"[APPROVAL REQUIRED] Action '{action_type}' needs operator approval (id={result.get('approval_id', '?')})"
+            return result.get("output", "(no output)")
+
+        # DESTRUCTIVE — block
+        await audit.log("blocked_shell_execution", actor_id=requested_by,
+                        payload={"cmd": cmd[:200], "host": host, "risk": risk})
+        return f"[BLOCKED] Destructive command blocked by safety policy. Request approval via /approve"
+
+    async def _audit_action(self, action_id: str, action_type: str,
+                             actor_id: str, params: Dict,
+                             result: str, risk: str):
+        """Record action in structured audit trail."""
+        def _audit():
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    "INSERT INTO audit_actions "
+                    "(audit_id, action_id, actor_type, actor_id, action_type, "
+                    "parameters_json, result, risk_level, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (f"aaud-{uuid.uuid4().hex[:8]}", action_id,
+                     "SYSTEM" if actor_id == "system" else "USER", actor_id,
+                     action_type, json.dumps(params or {}), result, risk, time.time()))
+                conn.commit()
+            finally:
+                conn.close()
+        await asyncio.to_thread(_audit)
+
+    async def get_actions(self, status: str = None, limit: int = 30) -> List[Dict]:
+        """Get execution actions with optional status filter."""
+        def _q():
+            conn = _db_connect()
+            try:
+                if status:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT * FROM execution_actions WHERE status=? "
+                        "ORDER BY created_at DESC LIMIT ?", (status, limit)).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM execution_actions ORDER BY created_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_results(self, action_id: str = None, limit: int = 20) -> List[Dict]:
+        """Get execution results."""
+        def _q():
+            conn = _db_connect()
+            try:
+                if action_id:
+                    return [dict(r) for r in conn.execute(
+                        "SELECT * FROM execution_results WHERE action_id=?",
+                        (action_id,)).fetchall()]
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM execution_results ORDER BY timestamp DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_audit_trail(self, limit: int = 30) -> List[Dict]:
+        """Get action audit trail."""
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM audit_actions ORDER BY created_at DESC LIMIT ?",
+                    (limit,)).fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_policies(self) -> List[Dict]:
+        """Get all action policies."""
+        def _q():
+            conn = _db_connect()
+            try:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM action_policies ORDER BY risk_level").fetchall()]
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+    async def get_stats(self) -> Dict:
+        """Get execution statistics."""
+        def _q():
+            conn = _db_connect()
+            try:
+                total = conn.execute("SELECT COUNT(*) FROM execution_actions").fetchone()[0]
+                completed = conn.execute("SELECT COUNT(*) FROM execution_actions WHERE status='completed'").fetchone()[0]
+                failed = conn.execute("SELECT COUNT(*) FROM execution_actions WHERE status='failed'").fetchone()[0]
+                pending = conn.execute("SELECT COUNT(*) FROM execution_actions WHERE status='pending' OR status='awaiting_approval'").fetchone()[0]
+                return {"total": total, "completed": completed, "failed": failed,
+                        "pending": pending, "success_rate": round(completed / max(1, total), 3)}
+            finally:
+                conn.close()
+        return await asyncio.to_thread(_q)
+
+
+action_service = ActionExecutionService()
+
+
+# ---------------------------------------------------------------------------
+# Mediated ToolExecutor Wrapper
+# ---------------------------------------------------------------------------
+# Monkey-patch the original ToolExecutor.execute to route through
+# ActionExecutionService for all shell commands.
+
+_original_tool_execute = tool_executor.execute
+
+
+async def _mediated_tool_execute(tool: str, host: str, cmd: str) -> str:
+    """Wraps all tool_executor.execute calls through the structured execution layer."""
+    if tool == "shell":
+        return await action_service.execute_shell_mediated(host, cmd)
+    elif tool == "docker":
+        if not cmd.strip().startswith("docker"):
+            cmd = f"docker {cmd}"
+        return await action_service.execute_shell_mediated(host, cmd)
+    else:
+        # Non-shell tools (ollama, http, image) pass through unmodified
+        return await _original_tool_execute(tool, host, cmd)
+
+
+# Apply the mediation wrapper
+tool_executor.execute = _mediated_tool_execute
+
+
+# ---------------------------------------------------------------------------
 # Dashboard API
 # ---------------------------------------------------------------------------
 
@@ -5758,6 +6341,42 @@ async def dashboard_system(request: web.Request) -> web.Response:
         return web.json_response({
             "evaluations": recent_evals, "scorecards": scorecards,
             "recommendations": recommendations,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_actions(request: web.Request) -> web.Response:
+    """Dashboard structured execution actions endpoint."""
+    try:
+        stats = await action_service.get_stats()
+        recent = await action_service.get_actions(limit=20)
+        policies = await action_service.get_policies()
+        audit_trail = await action_service.get_audit_trail(limit=20)
+        return web.json_response({
+            "stats": stats,
+            "recent_actions": recent,
+            "policies": policies,
+            "audit_trail": audit_trail,
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def dashboard_execution(request: web.Request) -> web.Response:
+    """Dashboard execution results and safety boundary endpoint."""
+    try:
+        stats = await action_service.get_stats()
+        results = await action_service.get_results(limit=30)
+        pending = await action_service.get_actions(status="awaiting_approval", limit=10)
+        risk_policy = {k: v for k, v in RISK_POLICY.items()}
+        blocked = BLOCKED_PATTERNS
+        return web.json_response({
+            "stats": stats,
+            "recent_results": results,
+            "pending_approvals": pending,
+            "risk_policy": risk_policy,
+            "blocked_patterns": blocked,
         })
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
@@ -6275,6 +6894,9 @@ SLASH_COMMANDS = {
     "auto": "Autonomous ops (/auto status|history)",
     "playbooks": "Operational playbooks (/playbooks search|explain)",
     "ops": "Operator overview (/ops overview|incidents|twin|autonomy)",
+    # Structured Execution
+    "actions": "Structured actions (/actions recent|stats|policies|audit|blocked)",
+    "execution": "Execution engine (/execution status|results)",
     # Core
     "memory": "Show persistent memory stats (/memory search|distill <query>)",
     "forget": "Clear memory (/forget, /forget all, /forget thread, /forget channel)",
@@ -7795,6 +8417,89 @@ async def handle_slash_command(cmd: str, args: str, channel: str, thread_ts: str
             await post_message(":control_knobs: */ops* commands: `overview`, `incidents`, `twin`, `autonomy`", channel, thread_ts)
         return True
 
+    if cmd == "actions":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "recent"
+
+        if subcmd == "recent":
+            actions = await action_service.get_actions(limit=10)
+            lines = [":shield: *Recent Structured Actions*\n"]
+            if not actions:
+                lines.append("_No actions recorded yet._")
+            for a in actions:
+                risk_icon = {
+                    "READ_ONLY": ":large_green_circle:",
+                    "SAFE_MUTATION": ":large_blue_circle:",
+                    "RISKY_MUTATION": ":large_yellow_circle:",
+                    "DESTRUCTIVE": ":red_circle:",
+                }.get(a.get("risk_level", ""), ":white_circle:")
+                lines.append(f"{risk_icon} `{a.get('action_type', '?')}` on {a.get('host', '?')} — _{a.get('status', '?')}_")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "stats":
+            stats = await action_service.get_stats()
+            lines = [":bar_chart: *Execution Stats*\n"]
+            lines.append(f"*Total actions:* {stats.get('total', 0)}")
+            lines.append(f"*Completed:* {stats.get('completed', 0)}")
+            lines.append(f"*Failed:* {stats.get('failed', 0)}")
+            lines.append(f"*Pending/Approval:* {stats.get('pending', 0)}")
+            lines.append(f"*Success rate:* {stats.get('success_rate', 0):.1%}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "policies":
+            policies = await action_service.get_policies()
+            lines = [":scroll: *Action Policies*\n"]
+            for p in policies[:15]:
+                approval = ":lock:" if p.get("requires_approval") else ":unlock:"
+                lines.append(f"{approval} `{p.get('action_type', '?')}` [{p.get('risk_level', '?')}] via {p.get('adapter', '?')}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "audit":
+            trail = await action_service.get_audit_trail(limit=10)
+            lines = [":memo: *Action Audit Trail*\n"]
+            if not trail:
+                lines.append("_No audit entries yet._")
+            for t in trail:
+                lines.append(f"• `{t.get('action_type', '?')}` [{t.get('risk_level', '?')}] {t.get('outcome', '')} — {t.get('requested_by', 'system')}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "blocked":
+            lines = [":no_entry: *Blocked Command Patterns*\n"]
+            for bp in BLOCKED_PATTERNS:
+                lines.append(f"• `{bp}`")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":shield: */actions* commands: `recent`, `stats`, `policies`, `audit`, `blocked`", channel, thread_ts)
+        return True
+
+    if cmd == "execution":
+        sub = args.strip().split(maxsplit=1)
+        subcmd = sub[0].lower() if sub else "status"
+
+        if subcmd == "status":
+            stats = await action_service.get_stats()
+            pending = await action_service.get_actions(status="awaiting_approval", limit=5)
+            lines = [":gear: *Execution Engine Status*\n"]
+            lines.append(f"*Total actions:* {stats.get('total', 0)} | *Success rate:* {stats.get('success_rate', 0):.1%}")
+            lines.append(f"*Pending approvals:* {len(pending)}")
+            if pending:
+                lines.append("\n*Awaiting Approval:*")
+                for p in pending:
+                    lines.append(f"  :hourglass: `{p.get('action_type', '?')}` on {p.get('host', '?')} — {p.get('params', '')[:60]}")
+            rp = {k: v for k, v in RISK_POLICY.items()}
+            lines.append(f"\n*Risk Policy:*")
+            for lvl, policy in rp.items():
+                lines.append(f"  {lvl}: {policy}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        elif subcmd == "results":
+            results = await action_service.get_results(limit=10)
+            lines = [":clipboard: *Recent Execution Results*\n"]
+            if not results:
+                lines.append("_No results yet._")
+            for r in results:
+                status_icon = ":white_check_mark:" if r.get("success") else ":x:"
+                lines.append(f"{status_icon} `{r.get('action_id', '?')[:12]}` — {r.get('output', '')[:80]}")
+            await post_message("\n".join(lines), channel, thread_ts)
+        else:
+            await post_message(":gear: */execution* commands: `status`, `results`", channel, thread_ts)
+        return True
+
     return False
 
 
@@ -8095,7 +8800,7 @@ async def handle_health(request: web.Request) -> web.Response:
     return web.json_response({
         "status": "healthy",
         "service": "bunny-alpha",
-        "version": "3.0.0",
+        "version": "3.1.0",
         "active_tasks": len(active),
         "total_tasks": len(task_manager.tasks),
         "providers": {
@@ -8142,7 +8847,7 @@ async def on_startup(app: web.Application):
     if result.get("ok"):
         BOT_USER_ID = result["user_id"]
         log.info(
-            f"Bunny Alpha v3.0 online | bot={result['user']} | "
+            f"Bunny Alpha v3.1 online | bot={result['user']} | "
             f"team={result['team']} | user_id={BOT_USER_ID}"
         )
     else:
@@ -8250,6 +8955,14 @@ async def on_startup(app: web.Application):
     except Exception as e:
         log.warning(f"Digital twin init error: {e}")
 
+    # Structured Execution policies
+    try:
+        await action_service.seed_policies()
+        policies = await action_service.get_policies()
+        log.info(f"Action policies seeded: {len(policies)} policies")
+    except Exception as e:
+        log.warning(f"Action policy seed error: {e}")
+
     log.info(f"Listening on port {PORT}")
 
     # Start background services
@@ -8258,7 +8971,7 @@ async def on_startup(app: web.Application):
     await scheduler.start_scheduler_loop()
     await intel_loop.start_loop(3600)  # Intelligence loop every hour
 
-    await audit.log("system_startup", payload={"version": "3.0.0"})
+    await audit.log("system_startup", payload={"version": "3.1.0"})
 
 
 async def _periodic_cleanup():
@@ -8306,8 +9019,10 @@ def main():
     app.router.add_get("/dashboard/learning", dashboard_learning)
     app.router.add_get("/dashboard/environment", dashboard_environment)
     app.router.add_get("/dashboard/system", dashboard_system)
+    app.router.add_get("/dashboard/actions", dashboard_actions)
+    app.router.add_get("/dashboard/execution", dashboard_execution)
 
-    log.info("Starting Bunny Alpha v3.0 \u2014 Autonomous Operations Platform")
+    log.info("Starting Bunny Alpha v3.1 \u2014 Autonomous Operations Platform")
     web.run_app(app, host="0.0.0.0", port=PORT)
 
 
