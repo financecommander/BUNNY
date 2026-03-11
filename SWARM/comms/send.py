@@ -198,7 +198,7 @@ def send_sendgrid_email(to_email: str, subject: str, body: str,
     from sendgrid.helpers.mail import Mail
 
     api_key = os.getenv("SENDGRID_API_KEY")
-    from_email = from_email or os.getenv("SENDGRID_FROM_EMAIL", "jack@calculusholdings.com")
+    from_email = from_email or os.getenv("SENDGRID_FROM_EMAIL", "jack@calculusmanagement.com")
     if not api_key or api_key == "CHANGEME":
         print("[SENDGRID] Missing SENDGRID_API_KEY in .env")
         return False
