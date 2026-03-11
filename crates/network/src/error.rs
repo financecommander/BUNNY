@@ -40,6 +40,15 @@ pub enum NetworkError {
     #[error("io error: {0}")]
     IoError(#[from] std::io::Error),
 
+    #[error("protocol error: {0}")]
+    Protocol(String),
+
+    #[error("serialization error: {0}")]
+    Serialization(String),
+
+    #[error("tool dispatch error: {0}")]
+    ToolDispatch(String),
+
     #[error("timeout")]
     Timeout,
 

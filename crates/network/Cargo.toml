@@ -9,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 bunny-crypto = { path = "../crypto" }
+bunny-agents = { path = "../agents" }
 quinn = "0.11"
 rustls = { version = "0.23", features = ["ring"] }
 tokio = { version = "1.43", features = ["full"] }
@@ -20,3 +21,5 @@ tracing = "0.1"
 dashmap = "6.1"
 uuid = { version = "1.16", features = ["v4", "serde"] }
 rcgen = "0.13"
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }

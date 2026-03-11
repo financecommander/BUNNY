@@ -137,6 +137,23 @@ impl Default for ModelRegistry {
     }
 }
 
+/// Convert a portal `ModelEntry` into a network `ModelDescriptor`
+/// for inclusion in agent manifests published to other codespaces.
+impl From<ModelEntry> for bunny_network::ModelDescriptor {
+    fn from(entry: ModelEntry) -> Self {
+        Self {
+            name: entry.name,
+            total_params: entry.total_params,
+            scale: entry.scale,
+            backend: entry.backend,
+            input_dim: entry.input_dim,
+            output_dim: entry.output_dim,
+            num_layers: entry.num_layers,
+            vram_bytes: entry.vram_bytes,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,6 +222,21 @@ mod tests {
         // 40M params → ~10MB packed
         let vram = ModelEntry::estimate_vram(40_000_000);
         assert!(vram > 9_000_000 && vram < 11_000_000);
+    }
+
+    #[test]
+    fn model_entry_to_descriptor_conversion() {
+        let worker = AgentId::new();
+        let entry = make_entry("threat_model", 8_000_000, vec![worker]);
+        let descriptor: bunny_network::ModelDescriptor = entry.into();
+
+        assert_eq!(descriptor.name, "threat_model");
+        assert_eq!(descriptor.total_params, 8_000_000);
+        assert_eq!(descriptor.scale, ModelScale::Micro);
+        assert_eq!(descriptor.backend, ComputeBackend::CudaPacked);
+        assert_eq!(descriptor.input_dim, 128);
+        assert_eq!(descriptor.output_dim, 10);
+        assert_eq!(descriptor.num_layers, 4);
     }
 
     #[test]

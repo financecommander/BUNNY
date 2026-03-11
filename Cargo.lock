@@ -257,11 +257,13 @@ dependencies = [
 name = "bunny-network"
 version = "1.0.0"
 dependencies = [
+ "bunny-agents",
  "bunny-crypto",
  "bytes",
  "dashmap",
  "quinn",
  "rcgen",
+ "reqwest",
  "rustls",
  "serde",
  "serde_json",
@@ -269,6 +271,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "x25519-dalek",
 ]
 
 [[package]]

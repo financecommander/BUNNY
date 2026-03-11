@@ -109,6 +109,9 @@ pub enum AgentRole {
     IotFirewall,
     AiGuardian,
     Learning,
+    /// Task dispatcher — classifies requests and routes to SWARM.
+    /// Cannot modify code, repos, or infrastructure.
+    Dispatcher,
     /// Custom agent with user-defined behavior.
     Custom,
 }
@@ -122,6 +125,7 @@ impl AgentRole {
             Self::IotFirewall => crate::prompts::IOT_FIREWALL_PROMPT,
             Self::AiGuardian => crate::prompts::AI_GUARDIAN_PROMPT,
             Self::Learning => crate::prompts::LEARNING_PROMPT,
+            Self::Dispatcher => crate::prompts::DISPATCHER_PROMPT,
             Self::Custom => "",
         }
     }
