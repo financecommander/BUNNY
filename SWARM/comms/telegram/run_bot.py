@@ -325,6 +325,7 @@ def handle_message(message):
         'call': 'call', 'phone': 'call', 'ring': 'call',
         'whatsapp': 'whatsapp', 'wa': 'whatsapp',
         'email': 'email', 'mail': 'email',
+        'tell': 'sms', 'say': 'sms', 'let': 'sms', 'notify': 'sms',
     }
 
     # Check for email dictation pattern
@@ -426,14 +427,8 @@ else:
                 chat_id=message.chat.id, message_id=status_msg.message_id)
         return
 
-    # Default: acknowledge and suggest actions
-    bot.reply_to(message,
-        f"Got it. What should I do with this?\n\n"
-        f"• `/send sms wayne {text[:50]}` — SMS it\n"
-        f"• `/send email wayne {text[:50]}` — Email it\n"
-        f"• `/send call wayne {text[:50]}` — Call and say it\n\n"
-        f"Or just tell me: _\"text wayne about this\"_",
-        parse_mode='Markdown')
+    # Default: concise acknowledgment
+    bot.reply_to(message, f"Got it. Need me to send this to someone? Just say who.")
 
 
 if __name__ == '__main__':
