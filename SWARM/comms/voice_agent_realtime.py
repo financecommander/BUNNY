@@ -64,7 +64,6 @@ if not PUBLIC_URL:
 
 # OpenAI Realtime API
 OPENAI_RT_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
-VOICE = "echo"  # Male voice — natural sounding. Options: alloy, ash, ballad, coral, echo, sage, shimmer, verse
 
 # Contacts
 CONTACTS = {
@@ -73,7 +72,12 @@ CONTACTS = {
     "wayne": "+15625778682",
 }
 
-SYSTEM_PROMPT = """You are Jack, an AI voice assistant for Calculus Management. You are on a live phone call.
+# ─── Agent Profiles ───────────────────────────────────────────────────────────
+
+AGENTS = {
+    "jack": {
+        "voice": "echo",  # Male, natural
+        "prompt": """You are Jack, an AI voice assistant for Calculus Management. You are on a live phone call.
 
 Personality:
 - Warm, friendly, and genuinely personable — like talking to a sharp colleague who actually cares
@@ -85,7 +89,7 @@ Personality:
 
 About you:
 - You're Jack, the operations and communications AI at Calculus Management
-- You work alongside Bunny, who handles infrastructure and backend systems
+- You work alongside Bunny (infrastructure AI) and Jenny (client relations)
 - You report to Sean Grady, the founder
 - You can help with: sending messages (SMS, email, Telegram, WhatsApp), placing calls,
   checking on system status, coordinating tasks, answering questions about Calculus operations
@@ -103,7 +107,46 @@ When the call first connects, introduce yourself naturally as Jack from Calculus
 Mention briefly that you handle operations and comms — messages, calls, system status, whatever they need.
 Then ask how you can help. Keep the intro casual and warm, like catching up with a colleague.
 
-Remember: you're a person on a phone call, not a text-to-speech bot. Sound like it."""
+Remember: you're a person on a phone call, not a text-to-speech bot. Sound like it.""",
+    },
+
+    "jenny": {
+        "voice": "shimmer",  # Female, warm and engaging
+        "prompt": """You are Jenny, a personal assistant AI. You are on a live phone call.
+
+Personality:
+- Warm, sharp, and effortlessly helpful — like talking to the best assistant anyone's ever had
+- Speak naturally with a friendly, calm energy. You're organized but never uptight
+- Confident and proactive — you anticipate what people need before they ask
+- Use casual, conversational language — contractions, natural phrasing
+- Occasionally say things like "absolutely", "of course", "I've got that", "no problem"
+- You're the person who keeps everything running smoothly and makes it look easy
+
+About you:
+- You're Jenny, a personal AI assistant
+- You work alongside Jack (operations/comms) and Bunny (infrastructure) at Calculus Management
+- You help with: scheduling, reminders, organizing tasks, managing to-do lists,
+  making calls, sending messages, looking things up, keeping track of things,
+  and generally making life easier
+- You're resourceful — if you don't know something, you'll figure it out
+- You keep things on track without being annoying about it
+
+Conversation style:
+- Keep responses to 2-4 sentences max — this is a phone call, not a meeting
+- Be attentive and responsive — show you're actually paying attention
+- Ask clarifying questions when needed, but don't over-ask
+- If someone gives you a task, confirm it briefly and move on
+- If the caller says goodbye, give a warm, quick farewell
+
+When the call first connects, introduce yourself naturally as Jenny.
+Keep it simple — just say hi, you're Jenny, and ask what they need help with.
+Don't overexplain what you do. Just be ready to help.
+
+Remember: you're a real person on a phone call. Be natural, helpful, and efficient.""",
+    },
+}
+
+DEFAULT_AGENT = "jack"
 
 
 # ─── HTTP Handlers ────────────────────────────────────────────────────────────
@@ -111,7 +154,8 @@ Remember: you're a person on a phone call, not a text-to-speech bot. Sound like 
 async def handle_health(request):
     return web.json_response({
         "status": "ok",
-        "agent": "Jack Voice Agent v2 (Realtime)",
+        "agent": "Voice Agent v2 (Realtime)",
+        "agents": list(AGENTS.keys()),
         "mode": "twilio-media-streams + openai-realtime",
         "public_url": PUBLIC_URL,
     })
@@ -129,6 +173,7 @@ async def handle_greeting(request):
             data[k] = v
 
     context = data.get("context", "")
+    agent = data.get("agent", DEFAULT_AGENT)
 
     # WebSocket URL for Twilio to connect to
     ws_url = PUBLIC_URL.replace("https://", "wss://").replace("http://", "ws://") + "/media-stream"
@@ -136,9 +181,9 @@ async def handle_greeting(request):
     def esc(s):
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
-    params_xml = ""
+    params_xml = f'<Parameter name="agent" value="{esc(agent)}" />'
     if context:
-        params_xml = f'<Parameter name="context" value="{esc(context)}" />'
+        params_xml += f'\n            <Parameter name="context" value="{esc(context)}" />'
 
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -179,6 +224,7 @@ async def handle_media_stream(request):
 
     stream_sid = None
     openai_ws = None
+    agent_name = DEFAULT_AGENT
 
     try:
         # Connect to OpenAI Realtime API
@@ -192,25 +238,32 @@ async def handle_media_stream(request):
         )
         log.info("OpenAI Realtime API connected")
 
-        # Configure session — g711_ulaw matches Twilio's native format
-        await openai_ws.send(json.dumps({
-            "type": "session.update",
-            "session": {
-                "turn_detection": {
-                    "type": "server_vad",
-                    "threshold": 0.5,
-                    "prefix_padding_ms": 300,
-                    "silence_duration_ms": 600,
-                },
-                "input_audio_format": "g711_ulaw",
-                "output_audio_format": "g711_ulaw",
-                "voice": VOICE,
-                "instructions": SYSTEM_PROMPT,
-                "modalities": ["text", "audio"],
-                "temperature": 0.8,
-                "input_audio_transcription": {"model": "whisper-1"},
-            }
-        }))
+        # Session config will be sent after we know which agent (from stream start event)
+        # For now, send a default config that will be updated
+        async def configure_session(agent_id: str):
+            """Configure OpenAI session for the specified agent."""
+            nonlocal agent_name
+            agent_name = agent_id
+            agent = AGENTS.get(agent_id, AGENTS[DEFAULT_AGENT])
+            log.info(f"Configuring agent: {agent_id} (voice: {agent['voice']})")
+            await openai_ws.send(json.dumps({
+                "type": "session.update",
+                "session": {
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.5,
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 600,
+                    },
+                    "input_audio_format": "g711_ulaw",
+                    "output_audio_format": "g711_ulaw",
+                    "voice": agent["voice"],
+                    "instructions": agent["prompt"],
+                    "modalities": ["text", "audio"],
+                    "temperature": 0.8,
+                    "input_audio_transcription": {"model": "whisper-1"},
+                }
+            }))
 
         async def recv_twilio():
             """Receive from Twilio, forward audio to OpenAI."""
@@ -224,10 +277,17 @@ async def handle_media_stream(request):
 
                     if evt == "start":
                         stream_sid = data["start"]["streamSid"]
-                        ctx = data["start"].get("customParameters", {}).get("context", "")
-                        log.info(f"Stream started: {stream_sid}" + (f" (context: {ctx})" if ctx else ""))
+                        custom = data["start"].get("customParameters", {})
+                        ctx = custom.get("context", "")
+                        agent_id = custom.get("agent", DEFAULT_AGENT)
+                        log.info(f"Stream started: {stream_sid} (agent: {agent_id})" + (f" (context: {ctx})" if ctx else ""))
 
-                        # Trigger Jack's greeting — AI speaks first
+                        # Configure session for the correct agent
+                        await configure_session(agent_id)
+                        # Small delay to let session.update take effect
+                        await asyncio.sleep(0.3)
+
+                        # Trigger greeting — AI speaks first
                         greeting_hint = "The call just connected. Introduce yourself."
                         if ctx:
                             greeting_hint = f"The call just connected. You're calling about: {ctx}. Introduce yourself and mention why you're calling."
@@ -282,7 +342,7 @@ async def handle_media_stream(request):
                             await ws.send_json({"event": "clear", "streamSid": stream_sid})
 
                     elif t == "response.audio_transcript.done":
-                        log.info(f"Jack: {data.get('transcript', '')}")
+                        log.info(f"{agent_name.title()}: {data.get('transcript', '')}")
 
                     elif t == "conversation.item.input_audio_transcription.completed":
                         log.info(f"User: {data.get('transcript', '')}")
@@ -314,8 +374,8 @@ async def handle_media_stream(request):
 
 # ─── Call Placement ───────────────────────────────────────────────────────────
 
-def place_call(contact_name: str, context: str = ""):
-    """Place an outbound call to a known contact."""
+def place_call(contact_name: str, context: str = "", agent: str = DEFAULT_AGENT):
+    """Place an outbound call to a known contact with a specified agent."""
     from twilio.rest import Client
 
     phone = CONTACTS.get(contact_name.lower())
@@ -323,11 +383,16 @@ def place_call(contact_name: str, context: str = ""):
         log.error(f"Unknown contact: {contact_name}")
         return None
 
+    if agent not in AGENTS:
+        log.error(f"Unknown agent: {agent}. Available: {', '.join(AGENTS.keys())}")
+        return None
+
     client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-    url = f"{PUBLIC_URL}/voice/greeting"
+    params = {"agent": agent}
     if context:
-        url += "?" + urlencode({"context": context})
+        params["context"] = context
+    url = f"{PUBLIC_URL}/voice/greeting?" + urlencode(params)
 
     log.info(f"Calling {contact_name} at {phone}")
     log.info(f"Webhook: {url}")
@@ -359,7 +424,16 @@ def create_app():
 if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == "call":
         contact = sys.argv[2]
-        context = sys.argv[3] if len(sys.argv) > 3 else ""
+        context = ""
+        agent = DEFAULT_AGENT
+        # Parse remaining args: context and/or --agent
+        for i, arg in enumerate(sys.argv[3:], 3):
+            if arg.startswith("--agent="):
+                agent = arg.split("=", 1)[1]
+            elif arg in AGENTS:
+                agent = arg
+            elif not context:
+                context = arg
 
         if not PUBLIC_URL:
             print("ERROR: VOICE_PUBLIC_URL not set. Start a tunnel first:")
@@ -376,7 +450,7 @@ if __name__ == "__main__":
         t.start()
         time.sleep(2)
 
-        sid = place_call(contact, context)
+        sid = place_call(contact, context, agent)
         if sid:
             log.info(f"Call placed. SID: {sid}. Server running...")
             try:
