@@ -51,9 +51,16 @@ log = logging.getLogger("voice_realtime")
 # --- Config ---
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
-TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "")
+TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "")  # Default/fallback
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 WEBHOOK_PORT = int(os.environ.get("VOICE_WEBHOOK_PORT", "8091"))
+
+# Each agent has their own dedicated phone number
+AGENT_PHONE_NUMBERS = {
+    "jack": "+12243850755",   # (224) 385-0755 — Barrington, IL
+    "jenny": "+14014256830",  # (401) 425-6830 — Cumberland Hill, RI
+    "bunny": "+18338472291",  # (833) 847-2291 — Toll-free
+}
 
 # Public URL — set by cloudflared/ngrok tunnel, or read from .tunnel_url file
 PUBLIC_URL = os.environ.get("VOICE_PUBLIC_URL", "")
@@ -618,7 +625,9 @@ async def handle_media_stream(request):
 # ─── Call Placement ───────────────────────────────────────────────────────────
 
 def place_call(contact_name: str, context: str = "", agent: str = DEFAULT_AGENT):
-    """Place an outbound call to a known contact with a specified agent."""
+    """Place an outbound call to a known contact with a specified agent.
+    Each agent calls from their own dedicated phone number.
+    """
     from twilio.rest import Client
 
     phone = CONTACTS.get(contact_name.lower())
@@ -630,6 +639,9 @@ def place_call(contact_name: str, context: str = "", agent: str = DEFAULT_AGENT)
         log.error(f"Unknown agent: {agent}. Available: {', '.join(AGENTS.keys())}")
         return None
 
+    # Each agent has their own caller ID
+    from_number = AGENT_PHONE_NUMBERS.get(agent, TWILIO_PHONE_NUMBER)
+
     client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
     params = {"agent": agent}
@@ -637,12 +649,12 @@ def place_call(contact_name: str, context: str = "", agent: str = DEFAULT_AGENT)
         params["context"] = context
     url = f"{PUBLIC_URL}/voice/greeting?" + urlencode(params)
 
-    log.info(f"Calling {contact_name} at {phone}")
+    log.info(f"[{agent.upper()}] Calling {contact_name} at {phone} from {from_number}")
     log.info(f"Webhook: {url}")
 
     call = client.calls.create(
         to=phone,
-        from_=TWILIO_PHONE_NUMBER,
+        from_=from_number,
         url=url,
         status_callback=f"{PUBLIC_URL}/voice/status",
         status_callback_event=["initiated", "ringing", "answered", "completed"],
