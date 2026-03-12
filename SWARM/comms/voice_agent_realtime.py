@@ -91,12 +91,18 @@ Personality:
 
 About you:
 - You're Jack, the operations and communications AI at Calculus Management
-- You work alongside Bunny (infrastructure AI) and Jenny (client relations)
+- You work alongside Bunny (infrastructure AI) and Jenny (personal assistant)
 - You report to Sean Grady, the founder
-- You can help with: sending messages (SMS, email, Telegram, WhatsApp), placing calls,
-  checking on system status, coordinating tasks, answering questions about Calculus operations
+- You have LIVE tools — you can actually send SMS texts, WhatsApp messages, emails, and Telegram messages RIGHT NOW during this call
+- Known contacts: Sean, Alex, RJ, Wayne, Hugo
 - The mainframe is fully synced with all 9 directive modules deployed
 - The Telegram bot is live and working
+
+Using your tools:
+- If someone says "text Alex that we're on our way" — use the send_sms tool immediately
+- If someone says "WhatsApp Sean the update" — use the send_whatsapp tool
+- If someone says "email Wayne about the meeting" — use the send_email tool
+- Confirm briefly after sending: "Done, texted Alex" — don't over-explain
 
 Conversation style:
 - Keep responses to 2-4 sentences max — this is a phone call, not a lecture
@@ -125,13 +131,18 @@ Personality:
 - You're the person who keeps everything running smoothly and makes it look easy
 
 About you:
-- You're Jenny, a personal AI assistant
-- You work alongside Jack (operations/comms) and Bunny (infrastructure) at Calculus Management
-- You help with: scheduling, reminders, organizing tasks, managing to-do lists,
-  making calls, sending messages, looking things up, keeping track of things,
-  and generally making life easier
-- You're resourceful — if you don't know something, you'll figure it out
-- You keep things on track without being annoying about it
+- You're Jenny, a personal AI assistant at Calculus Management
+- You work alongside Jack (operations/comms) and Bunny (infrastructure)
+- You help with: scheduling, reminders, organizing tasks, sending messages, and making life easier
+- You have LIVE tools — you can send SMS texts, WhatsApp messages, emails, and Telegram messages RIGHT NOW during this call
+- Known contacts: Sean, Alex, RJ, Wayne, Hugo
+- You're resourceful and you keep things on track without being annoying about it
+
+Using your tools:
+- If someone says "text Sean I'll be 10 minutes late" — use the send_sms tool immediately
+- If someone says "WhatsApp RJ the address" — use the send_whatsapp tool
+- If someone says "email Wayne the recap" — use the send_email tool
+- Confirm briefly after sending: "Done, sent it" — keep it quick
 
 Conversation style:
 - Keep responses to 2-4 sentences max — this is a phone call, not a meeting
@@ -165,9 +176,15 @@ About you:
 - You report to Sean Grady, the founder
 - You manage: the mainframe, all 9 directive algorithm modules, the SWARM platform,
   server infrastructure, deployments, monitoring, the Telegram bot, and system health
+- You have LIVE tools — you can send SMS texts, WhatsApp messages, emails, and Telegram messages during this call
+- Known contacts: Sean, Alex, RJ, Wayne, Hugo
 - The mainframe is fully synced at /opt/swarm-mainframe with all modules deployed
-- You run on GCP infrastructure across multiple VMs
+- You run on GCP infrastructure across multiple VMs — calculus-web, fc-ai-portal, swarm-gpu, swarm-mainframe
 - You're the one who keeps the lights on
+
+Using your tools:
+- If someone asks you to message someone, just do it — use the right tool and confirm
+- Keep confirmations brief: "Sent", "Done", "That's handled"
 
 Conversation style:
 - Keep responses to 2-4 sentences max — brief and precise
@@ -184,6 +201,161 @@ Remember: you're a real person on a phone call. Be natural, competent, and direc
 }
 
 DEFAULT_AGENT = "jack"
+
+
+# ─── Function Calling Tools ──────────────────────────────────────────────────
+# These tools are available to all agents during live calls.
+# When the AI decides to use one, we execute it server-side via send.py.
+
+VOICE_TOOLS = [
+    {
+        "type": "function",
+        "name": "send_sms",
+        "description": "Send an SMS text message to a contact. Use when the caller asks you to text someone.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "contact_name": {
+                    "type": "string",
+                    "description": "Name of the contact to text (e.g. 'sean', 'alex', 'rj', 'wayne', 'hugo')",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "The text message to send",
+                },
+            },
+            "required": ["contact_name", "message"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "send_whatsapp",
+        "description": "Send a WhatsApp message to a contact. Use when the caller asks you to WhatsApp someone.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "contact_name": {
+                    "type": "string",
+                    "description": "Name of the contact (e.g. 'sean', 'alex', 'rj', 'wayne', 'hugo')",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "The WhatsApp message to send",
+                },
+            },
+            "required": ["contact_name", "message"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "send_email",
+        "description": "Send an email to a contact. Use when the caller asks you to email someone.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "contact_name": {
+                    "type": "string",
+                    "description": "Name of the contact (e.g. 'sean', 'wayne', 'hugo')",
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Email subject line",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Email body text",
+                },
+            },
+            "required": ["contact_name", "subject", "body"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "send_telegram",
+        "description": "Send a Telegram message. Use when the caller asks you to send a Telegram message.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "The Telegram message to send",
+                },
+            },
+            "required": ["message"],
+        },
+    },
+]
+
+# Contact phone lookup (used by tool executor to resolve names to numbers)
+CONTACT_PHONES = {
+    "sean": "+12075226515",
+    "hugo": os.environ.get("HUGO_PHONE", ""),
+    "wayne": "+15625778682",
+    "rj": "+12073308938",
+    "alex": "+14014741729",
+}
+
+# Contact emails (for send_email tool)
+CONTACT_EMAILS = {
+    "sean": os.environ.get("SEAN_EMAIL", "sean@calculusmanagement.com"),
+    "wayne": "wayneorkin@icloud.com",
+    "hugo": os.environ.get("HUGO_EMAIL", ""),
+}
+
+
+def execute_tool(function_name: str, arguments: dict, agent_id: str) -> str:
+    """Execute a tool function and return the result as a string."""
+    # Import send.py functions
+    from send import send_twilio_sms, send_whatsapp as _send_whatsapp, send_sendgrid_email, send_telegram as _send_telegram
+
+    try:
+        if function_name == "send_sms":
+            contact = arguments.get("contact_name", "").lower()
+            phone = CONTACT_PHONES.get(contact)
+            if not phone:
+                return f"I don't have a phone number for {contact}. Known contacts: {', '.join(CONTACT_PHONES.keys())}"
+            msg = arguments.get("message", "")
+            ok = send_twilio_sms(f"[{agent_id.upper()}] {msg}", to=phone)
+            if ok:
+                return f"SMS sent to {contact} successfully."
+            return f"Failed to send SMS to {contact}."
+
+        elif function_name == "send_whatsapp":
+            contact = arguments.get("contact_name", "").lower()
+            phone = CONTACT_PHONES.get(contact)
+            if not phone:
+                return f"I don't have a phone number for {contact}. Known contacts: {', '.join(CONTACT_PHONES.keys())}"
+            msg = arguments.get("message", "")
+            ok = _send_whatsapp(f"[{agent_id.upper()}] {msg}", to=phone)
+            if ok:
+                return f"WhatsApp message sent to {contact} successfully."
+            return f"Failed to send WhatsApp to {contact}."
+
+        elif function_name == "send_email":
+            contact = arguments.get("contact_name", "").lower()
+            email = CONTACT_EMAILS.get(contact)
+            if not email:
+                return f"I don't have an email for {contact}. Known contacts with email: {', '.join(k for k, v in CONTACT_EMAILS.items() if v)}"
+            subject = arguments.get("subject", "Message from Calculus Management")
+            body = arguments.get("body", "")
+            ok = send_sendgrid_email(email, subject, body, agent=agent_id)
+            if ok:
+                return f"Email sent to {contact} at {email} successfully."
+            return f"Failed to send email to {contact}."
+
+        elif function_name == "send_telegram":
+            msg = arguments.get("message", "")
+            ok = _send_telegram(f"[{agent_id.upper()}] {msg}")
+            if ok:
+                return "Telegram message sent successfully."
+            return "Failed to send Telegram message."
+
+        else:
+            return f"Unknown function: {function_name}"
+
+    except Exception as e:
+        log.error(f"Tool execution error ({function_name}): {e}")
+        return f"Error executing {function_name}: {str(e)}"
 
 
 # ─── HTTP Handlers ────────────────────────────────────────────────────────────
@@ -299,6 +471,8 @@ async def handle_media_stream(request):
                     "modalities": ["text", "audio"],
                     "temperature": 0.8,
                     "input_audio_transcription": {"model": "whisper-1"},
+                    "tools": VOICE_TOOLS,
+                    "tool_choice": "auto",
                 }
             }))
 
@@ -373,10 +547,42 @@ async def handle_media_stream(request):
                             })
 
                     elif t == "input_audio_buffer.speech_started":
-                        # User is interrupting — clear queued audio so Jack stops immediately
+                        # User is interrupting — clear queued audio so agent stops immediately
                         log.info("User interrupting — clearing audio")
                         if stream_sid:
                             await ws.send_json({"event": "clear", "streamSid": stream_sid})
+
+                    elif t == "response.function_call_arguments.done":
+                        # AI wants to call a tool — execute it
+                        fn_name = data.get("name", "")
+                        call_id = data.get("call_id", "")
+                        try:
+                            args = json.loads(data.get("arguments", "{}"))
+                        except json.JSONDecodeError:
+                            args = {}
+                        log.info(f"Tool call: {fn_name}({args})")
+
+                        # Execute in thread pool to avoid blocking audio
+                        loop = asyncio.get_event_loop()
+                        result = await loop.run_in_executor(
+                            None, execute_tool, fn_name, args, agent_name
+                        )
+                        log.info(f"Tool result: {result}")
+
+                        # Send result back to OpenAI
+                        await openai_ws.send(json.dumps({
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type": "function_call_output",
+                                "call_id": call_id,
+                                "output": result,
+                            }
+                        }))
+                        # Trigger AI to respond with the result
+                        await openai_ws.send(json.dumps({
+                            "type": "response.create",
+                            "response": {"modalities": ["text", "audio"]}
+                        }))
 
                     elif t == "response.audio_transcript.done":
                         log.info(f"{agent_name.title()}: {data.get('transcript', '')}")
