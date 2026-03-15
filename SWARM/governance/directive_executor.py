@@ -27,8 +27,8 @@ import anthropic
 
 from .directive_store import DirectiveRecord, list_all, pending, update_status
 from .autopush import push_inline_code, repo_for_directive
+from ..comms.portal_client import get_anthropic_key
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 MODEL = os.getenv("DIRECTIVE_MODEL", "claude-opus-4-6")
 
 # Max tokens for code generation
@@ -59,8 +59,9 @@ Do not output anything outside the JSON object.
 
 
 def _call_claude(directive_text: str, repo_context: str = "") -> dict:
-    """Call Claude API with the directive and return parsed JSON response."""
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    """Call Claude API via key fetched from AI Portal."""
+    api_key = get_anthropic_key()
+    client = anthropic.Anthropic(api_key=api_key)
 
     user_content = f"DIRECTIVE:\n\n{directive_text}"
     if repo_context:
@@ -105,8 +106,9 @@ def execute(record: DirectiveRecord) -> dict:
     """
     result = {"success": False, "commit_hash": "", "error": "", "files_written": []}
 
-    if not ANTHROPIC_API_KEY:
-        result["error"] = "ANTHROPIC_API_KEY not set"
+    api_key = get_anthropic_key()
+    if not api_key:
+        result["error"] = "Anthropic key unavailable — check AI Portal config"
         update_status(record.directive_id, "error", error=result["error"])
         return result
 
