@@ -1,0 +1,30 @@
+[Unit]
+Description=BUNNY Signal Ingress Daemon
+Documentation=https://github.com/financecommander/BUNNY
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=bunny
+Group=bunny
+WorkingDirectory=/opt/repos/BUNNY
+EnvironmentFile=/opt/repos/BUNNY/SWARM/comms/.env
+Environment="PYTHONPATH=/opt/repos/BUNNY"
+Environment="DIRECTIVE_DB_PATH=/opt/swarm/data/directives.db"
+Environment="SWARM_REPO_PATH=/opt/repos/super-duper-spork"
+Environment="BUNNY_REPO_PATH=/opt/repos/BUNNY"
+Environment="TRITON_REPO_PATH=/opt/repos/Triton"
+Environment="GIT_AUTHOR_NAME=Swarm Mainframe"
+Environment="GIT_AUTHOR_EMAIL=swarm@calculusholdings.com"
+ExecStart=/usr/bin/python3 -m SWARM.comms.signal_ingress
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=signal-ingress
+
+[Install]
+WantedBy=multi-user.target
