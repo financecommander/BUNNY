@@ -30,6 +30,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 from ..governance.directive_store import DirectiveRecord, get, pending, save, summary_table, update_status
+from ..governance.directive_executor import execute, execute_pending
 
 SIGNAL_CLI    = os.getenv("SIGNAL_CLI_PATH", "signal-cli")
 SENDER_NUMBER = os.getenv("SIGNAL_SENDER_NUMBER", "")
@@ -155,9 +156,17 @@ def process_message(envelope: dict) -> None:
     update_status(directive_id, "acknowledged")
     _acknowledge(sender, directive_id, summary)
 
+    # Immediately trigger code generation + autopush
+    record = get(directive_id)
+    if record:
+        try:
+            execute(record)
+        except Exception as e:
+            print(f"[signal_ingress] executor error for {directive_id}: {e}", flush=True)
+
 
 def run_once() -> int:
-    """Run a single receive pass. Returns number of directives processed."""
+    """Run a single receive pass + execute any pending directives."""
     messages = _receive_messages()
     count = 0
     for msg in messages:
@@ -166,6 +175,13 @@ def run_once() -> int:
             count += 1
         except Exception as e:
             print(f"[signal_ingress] process error: {e}", flush=True)
+
+    # Also retry any directives stuck in acknowledged state (e.g. from prior sessions)
+    try:
+        execute_pending()
+    except Exception as e:
+        print(f"[signal_ingress] execute_pending error: {e}", flush=True)
+
     return count
 
 
@@ -173,12 +189,13 @@ def run_daemon() -> None:
     """Poll Signal continuously."""
     print(f"[signal_ingress] starting — number={SENDER_NUMBER}  interval={POLL_INTERVAL}s", flush=True)
 
-    # Show any pending (unbuilt) directives from prior sessions
+    # On startup, execute any pending directives from prior sessions automatically
     p = pending()
     if p:
-        print(f"[signal_ingress] {len(p)} pending directive(s) from prior sessions:", flush=True)
+        print(f"[signal_ingress] {len(p)} pending directive(s) from prior sessions — executing...", flush=True)
         for r in p:
             print(f"  {r.directive_id}  ({r.received_at[:19]})  {r.summary}", flush=True)
+        execute_pending()
 
     while True:
         try:
