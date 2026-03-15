@@ -54,7 +54,26 @@ Claude Local is a development workspace only — never a runtime target.
 
 ---
 
-## 3. Prohibited Patterns
+## 3. Global Task Reach
+
+The swarm **executes tasks globally** — web research, API calls, data collection,
+external service integrations, calls, emails, deployments, and any other outbound
+work can reach any target worldwide.
+
+The boundary rule governs where the swarm **lives and stores state**, not where
+it **acts**. Orchestration stays on mainframe; task execution reaches everywhere.
+
+```
+swarm-mainframe (orchestrates)
+    → dispatches tasks to workers
+        → workers act globally (any API, any endpoint, any service)
+        → results returned to mainframe
+    → state updated on mainframe
+```
+
+---
+
+## 4. Prohibited Patterns
 
 - Storing swarm state on developer machines
 - Running swarm agents outside the three nodes
