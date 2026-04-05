@@ -87,7 +87,7 @@ img {
 }
 
 .header-wordmark {
-  width: 154px;
+  width: 184px;
   height: auto;
 }
 
@@ -616,6 +616,102 @@ summary {
   align-items: start;
 }
 
+.image-story,
+.gallery-grid {
+  display: grid;
+  gap: 28px;
+  align-items: start;
+}
+
+.image-story {
+  grid-template-columns: minmax(0, 1.08fr) minmax(320px, 0.82fr);
+}
+
+.image-story-media,
+.gallery-card {
+  margin: 0;
+}
+
+.image-story-media img,
+.gallery-card img {
+  width: 100%;
+  display: block;
+  object-fit: cover;
+  aspect-ratio: 4 / 3;
+  border-radius: 28px;
+  filter: grayscale(1) contrast(1.02) brightness(1);
+}
+
+.image-story-media {
+  position: relative;
+}
+
+.image-story-media::after,
+.gallery-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 28px;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(10, 16, 21, 0.01), rgba(10, 16, 21, 0.18)),
+    linear-gradient(135deg, rgba(122, 215, 207, 0.04), rgba(241, 140, 58, 0.03));
+  box-shadow: inset 0 0 0 1px rgba(195, 214, 226, 0.08);
+}
+
+.image-story-media figcaption,
+.gallery-card figcaption {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.55;
+}
+
+.image-story-copy h3,
+.gallery-copy h3 {
+  font-size: clamp(1.9rem, 3.5vw, 3.4rem);
+  line-height: 1;
+  letter-spacing: -0.04em;
+  margin: 10px 0 16px;
+  max-width: 12ch;
+}
+
+.gallery-grid {
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.72fr);
+  grid-template-areas:
+    "large copy"
+    "large small";
+}
+
+.gallery-card {
+  position: relative;
+}
+
+.gallery-card-large {
+  grid-area: large;
+}
+
+.gallery-card-large img {
+  aspect-ratio: 4 / 5;
+}
+
+.gallery-grid .gallery-card:not(.gallery-card-large) {
+  grid-area: small;
+}
+
+.gallery-grid .gallery-card:not(.gallery-card-large) img {
+  aspect-ratio: 1 / 1;
+}
+
+.gallery-copy {
+  grid-area: copy;
+}
+
+.gallery-copy p {
+  color: var(--muted);
+  line-height: 1.7;
+}
+
 .bullet-list {
   list-style: none;
   padding: 0;
@@ -858,6 +954,8 @@ summary {
   .hero-shell,
   .hero-band,
   .overview-layout,
+  .image-story,
+  .gallery-grid,
   .material-layout,
   .cta-grid,
   .process-flow,
@@ -885,6 +983,18 @@ summary {
   .mesh-line-b {
     right: 4%;
     width: 42%;
+  }
+
+  .gallery-grid {
+    grid-template-areas:
+      "copy"
+      "large"
+      "small";
+  }
+
+  .gallery-card-large img,
+  .gallery-grid .gallery-card:not(.gallery-card-large) img {
+    aspect-ratio: 4 / 3;
   }
 }
 
@@ -1008,6 +1118,10 @@ summary {
 
   .hero-copy h2 {
     font-size: clamp(2.1rem, 12vw, 3.7rem);
+  }
+
+  .header-wordmark {
+    width: 170px;
   }
 
   .section {
