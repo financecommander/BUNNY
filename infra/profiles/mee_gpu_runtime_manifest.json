@@ -1,0 +1,177 @@
+{
+  "schema_version": 1,
+  "lane": "mee-gpu",
+  "description": "Deployment-aware MEE runtime manifest for L4 serving lanes and A100/H100 teacher-distiller lanes.",
+  "bootstrap_models": [
+    "deepseek-r1:14b",
+    "qwen2.5-coder:14b"
+  ],
+  "artifact_slots": [
+    {
+      "lane": "coding.route",
+      "artifact_kind": "serving_lane",
+      "node_roles": [
+        "deploy_favored",
+        "structure_explore"
+      ],
+      "target_hardware": "standalone_l4",
+      "deployment_priority": "highest",
+      "family_bias": [
+        "binary_net",
+        "hybrid_ssm_transformer"
+      ]
+    },
+    {
+      "lane": "coding.verify",
+      "artifact_kind": "serving_lane",
+      "node_roles": [
+        "deploy_favored",
+        "structure_explore"
+      ],
+      "target_hardware": "triton_l4",
+      "deployment_priority": "highest",
+      "family_bias": [
+        "ternary_net",
+        "hybrid_ssm_transformer"
+      ]
+    },
+    {
+      "lane": "coding.dependency_map",
+      "artifact_kind": "serving_lane",
+      "node_roles": [
+        "deploy_favored",
+        "structure_explore"
+      ],
+      "target_hardware": "triton_l4",
+      "deployment_priority": "high",
+      "family_bias": [
+        "graph_transformer",
+        "graph_neural"
+      ]
+    },
+    {
+      "lane": "coding.synthesize",
+      "artifact_kind": "serving_lane",
+      "node_roles": [
+        "deploy_favored",
+        "structure_explore"
+      ],
+      "target_hardware": "triton_l4",
+      "deployment_priority": "high",
+      "family_bias": [
+        "hybrid_ssm_transformer",
+        "hybrid"
+      ]
+    },
+    {
+      "lane": "verification.guard",
+      "artifact_kind": "teacher_distiller",
+      "node_roles": [
+        "teacher_distiller"
+      ],
+      "target_hardware": "a100_h100",
+      "deployment_priority": "highest",
+      "family_bias": [
+        "security_monitor_net",
+        "tcn",
+        "verifier"
+      ]
+    },
+    {
+      "lane": "scheduler.boundary",
+      "artifact_kind": "teacher_distiller",
+      "node_roles": [
+        "teacher_distiller"
+      ],
+      "target_hardware": "a100_h100",
+      "deployment_priority": "high",
+      "family_bias": [
+        "tcn",
+        "intent_router",
+        "lane_classifier"
+      ]
+    },
+    {
+      "lane": "tool_risk_gate",
+      "artifact_kind": "teacher_distiller",
+      "node_roles": [
+        "teacher_distiller"
+      ],
+      "target_hardware": "a100_h100",
+      "deployment_priority": "high",
+      "family_bias": [
+        "security_monitor_net",
+        "fact_consistency_verifier",
+        "verifier"
+      ]
+    },
+    {
+      "lane": "routing.lane_selector",
+      "artifact_kind": "teacher_distiller",
+      "node_roles": [
+        "teacher_distiller"
+      ],
+      "target_hardware": "a100_h100",
+      "deployment_priority": "high",
+      "family_bias": [
+        "intent_router",
+        "lane_classifier",
+        "graph_neural"
+      ]
+    }
+  ],
+  "node_profiles": {
+    "sw-gpu-mee-01": {
+      "role": "deploy_favored",
+      "seed": 52,
+      "population": 20,
+      "elite": 4,
+      "concurrent": 2,
+      "save_best_checkpoints": true,
+      "preferred_families": [
+        "hybrid_ssm_transformer",
+        "binary_net",
+        "ternary_net"
+      ],
+      "preferred_targets": [
+        "standalone_l4",
+        "triton_l4"
+      ]
+    },
+    "sw-gpu-mee-02": {
+      "role": "structure_explore",
+      "seed": 53,
+      "population": 20,
+      "elite": 4,
+      "concurrent": 2,
+      "save_best_checkpoints": true,
+      "preferred_families": [
+        "graph_transformer",
+        "graph_neural",
+        "hybrid"
+      ],
+      "preferred_targets": [
+        "triton_l4",
+        "a100_h100"
+      ]
+    },
+    "sw-gpu-a100-01": {
+      "role": "teacher_distiller",
+      "seed": 54,
+      "population": 24,
+      "elite": 6,
+      "concurrent": 2,
+      "save_best_checkpoints": true,
+      "preferred_families": [
+        "ternary_net",
+        "hybrid_ssm_transformer",
+        "hybrid",
+        "security_monitor_net"
+      ],
+      "preferred_targets": [
+        "a100_h100",
+        "triton_l4"
+      ]
+    }
+  }
+}
